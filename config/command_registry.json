@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "commands": {
+    "培育": {
+      "category": "satellite",
+      "aliases": [],
+      "arguments": [],
+      "intent": "action",
+      "flow_type": "normal"
+    },
+    "裝備衛星": {
+      "category": "satellite",
+      "aliases": [],
+      "arguments": ["編號"],
+      "intent": "action",
+      "flow_type": "normal"
+    },
+    "衛星圖鑑": {
+      "category": "satellite",
+      "aliases": [],
+      "arguments": [],
+      "intent": "query",
+      "flow_type": "normal"
+    },
+    "衛星技能": {
+      "category": "satellite",
+      "aliases": [],
+      "arguments": [],
+      "intent": "query",
+      "flow_type": "normal"
+    },
+    "繼承": {
+      "category": "satellite",
+      "aliases": [],
+      "arguments": ["編號"],
+      "intent": "action",
+      "flow_type": "normal"
+    },
+
+    "市集": {
+      "category": "market",
+      "aliases": [],
+      "arguments": [],
+      "intent": "query",
+      "flow_type": "market_hub"
+    },
+    "行情": {
+      "category": "market",
+      "aliases": [],
+      "arguments": ["代稱"],
+      "intent": "chart",
+      "flow_type": "market_chart"
+    },
+    "入資": {
+      "category": "market",
+      "aliases": [],
+      "arguments": ["代稱", "數量"],
+      "intent": "action",
+      "flow_type": "normal"
+    },
+    "撤資": {
+      "category": "market",
+      "aliases": [],
+      "arguments": ["代稱", "數量"],
+      "intent": "action",
+      "flow_type": "normal"
+    },
+    "商契": {
+      "category": "market",
+      "aliases": [],
+      "arguments": [],
+      "intent": "query",
+      "flow_type": "normal"
+    },
+    "我的槓桿": {
+      "category": "market",
+      "aliases": [],
+      "arguments": [],
+      "intent": "query",
+      "flow_type": "normal"
+    },
+    "平倉": {
+      "category": "market",
+      "aliases": [],
+      "arguments": ["編號"],
+      "intent": "action",
+      "flow_type": "normal"
+    },
+
+    "溫泉旅行": {
+      "category": "event",
+      "aliases": [],
+      "arguments": ["名字"],
+      "intent": "action",
+      "flow_type": "normal"
+    },
+
+    "戰鬥陀螺": {
+      "category": "system",
+      "aliases": [],
+      "arguments": [],
+      "intent": "catalog",
+      "flow_type": "command_catalog"
+    }
+  }
+}

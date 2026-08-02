@@ -1,0 +1,116 @@
+{
+  "items": [
+    {
+      "key": "contract_attention",
+      "command": "契約行情 專注",
+      "name": "專注",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "contract_wanghe",
+      "command": "契約行情 王核",
+      "name": "王核",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "contract_sifu",
+      "command": "契約行情 四福",
+      "name": "四福",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "contract_tefu",
+      "command": "契約行情 特福",
+      "name": "特福",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "contract_jinfu",
+      "command": "契約行情 進福",
+      "name": "進福",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "contract_shard",
+      "command": "契約行情 碎片",
+      "name": "碎片",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "contract_draw_zhufu",
+      "command": "契約行情 抽祝",
+      "name": "抽祝",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "contract_two_ticket",
+      "command": "契約行情 二券",
+      "name": "二券",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "market_qianzhuang",
+      "command": "行情 錢莊",
+      "name": "錢莊",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "market_fishery",
+      "command": "行情 漁業",
+      "name": "漁業",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "market_mining",
+      "command": "行情 礦業",
+      "name": "礦業",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "market_xuanneng",
+      "command": "行情 旋核",
+      "name": "旋核",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "market_tanhao",
+      "command": "行情 摸熊",
+      "name": "摸熊",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "market_qunxing",
+      "command": "行情 群星",
+      "name": "群星",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "market_tongtian",
+      "command": "行情 通天",
+      "name": "通天",
+      "enabled": true,
+      "aliases": []
+    },
+    {
+      "key": "market_rongneng",
+      "command": "行情 熔能",
+      "name": "熔能",
+      "enabled": true,
+      "aliases": []
+    }
+  ]
+}
