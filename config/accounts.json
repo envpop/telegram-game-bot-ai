@@ -1,0 +1,17 @@
+{
+  "active_account": "main",
+  "accounts": {
+    "test": {
+      "label": "測試帳號",
+      "session_name": "accounts/test/session",
+      "bitwarden_item": "telegram-test-account",
+      "env_prefix": "TEST"
+    },
+    "main": {
+      "label": "主帳號",
+      "session_name": "accounts/main/session",
+      "bitwarden_item": "telegram-main-account",
+      "env_prefix": "MAIN"
+    }
+  }
+}

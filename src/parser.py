@@ -142,6 +142,11 @@ class CommandParser:
         text = re.sub(r"\s+", " ", text)
         return text.strip()
 
+    # 無空格時，緊接在指令後面的字元必須符合這個 pattern，才視為「指令+參數」
+    # 而不是另一個剛好以同樣文字開頭的中文指令（例如「行情」跟「行情表」）。
+    # 只允許純數字/英文緊貼指令，因為中文參數（名字/代稱等）沒有空格會跟指令詞黏在一起、無法切分邊界。
+    _BARE_ARG_PATTERN = re.compile(r"^[A-Za-z0-9]")
+
     def find_command(self, text):
         normalized = self.normalize_text(text)
         if not normalized:
@@ -155,8 +160,25 @@ class CommandParser:
                     "matched_by": matched_by,
                     "remaining": "",
                 }
-            if normalized.startswith(candidate + " "):
-                remaining = normalized[len(candidate):].strip()
+
+            if not normalized.startswith(candidate):
+                continue
+
+            rest = normalized[len(candidate):]
+
+            # 情況一：指令後面直接接空格，例如「出戰 1」
+            if rest.startswith(" "):
+                remaining = rest.strip()
+                return {
+                    "raw_command": candidate,
+                    "canonical_command": canonical,
+                    "matched_by": matched_by,
+                    "remaining": remaining,
+                }
+
+            # 情況二：指令後面無空格直接接純數字/英文參數，例如「出戰1」
+            if rest and self._BARE_ARG_PATTERN.match(rest):
+                remaining = rest.strip()
                 return {
                     "raw_command": candidate,
                     "canonical_command": canonical,

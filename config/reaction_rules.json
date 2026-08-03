@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "expedition_slots_full",
+      "match_pattern": "遠征隊已滿",
+      "description": "遠征隊三隊都在外，提示要先收回才能派下一隊",
+      "risk_level": "safe",
+      "auto_execute": true,
+      "action": "收遠征",
+      "cooldown_seconds": 60
+    }
+  ]
+}

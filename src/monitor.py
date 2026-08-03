@@ -5,24 +5,17 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from dotenv import load_dotenv
-from telethon import TelegramClient, events
+from telethon import events
+
+from telegram_client import client, BASE_DIR, is_self_sent
 
 # ============================================================
 # 基本設定
 # ============================================================
 
-BASE_DIR = Path(__file__).resolve().parent.parent
 LOG_DIR = BASE_DIR / "logs"
 MEDIA_DIR = LOG_DIR / "media"
 LOCAL_TZ = timezone(timedelta(hours=8))
-
-load_dotenv(BASE_DIR / ".env")
-
-API_ID = int(os.getenv("TELEGRAM_API_ID"))
-API_HASH = os.getenv("TELEGRAM_API_HASH")
-
-SESSION_NAME = "accounts/test/session"
 
 MONITORED_CHATS = {
     8707720905: "摸熊神社",
@@ -30,6 +23,16 @@ MONITORED_CHATS = {
 }
 
 DOWNLOAD_TIMEOUT_SECONDS = 30
+
+# 圖片下載開關：預設關閉。已確認遊戲內的圖表訊息(如契約行情走勢圖)
+# 內容跟同組的文字訊息重複,目前沒有圖片辨識需求,關閉可省下大量硬碟空間。
+# 關閉後 record 裡的 is_image / media 欄位仍會照常記錄「這裡曾經有一張圖」，
+# 只是不下載實體檔案；未來如果發現例外情況(只有圖沒有文字)，把這裡打開即可。
+DOWNLOAD_MEDIA_ENABLED = False
+
+# 「最近訊息」小檔案：固定只保留最近 N 筆，方便快速 debug，
+# 不用每次都打開一整天份的完整 log。跟完整 log 分開存放，永遠很小。
+DEBUG_TAIL_SIZE = 1000
 
 # ============================================================
 # CLI
@@ -40,17 +43,20 @@ def parse_args():
     parser.add_argument("--watch", action="store_true")
     return parser.parse_args()
 
-ARGS = parse_args()
+class _DefaultArgs:
+    """被其他程式 import 時的預設值，避免搶先解析 main.py 自己的命令列參數。"""
+    watch = False
+
+ARGS = _DefaultArgs()
 
 # ============================================================
-# Telegram Client
+# 外部掛勾（給 main.py 這類外部程式使用）
 # ============================================================
-
-client = TelegramClient(
-    SESSION_NAME,
-    API_ID,
-    API_HASH,
-)
+# monitor.py 獨立執行時完全不會用到這個，維持原本行為。
+# 只有當外部程式（例如 main.py）把這個設成一個 async function 時，
+# 每筆訊息存檔後才會額外呼叫一次，把 record 遞出去做後續處理（parser/executor）。
+# monitor.py 本身不 import parser 或 executor，維持單一職責（純接收）。
+ON_RECORD_CALLBACK = None
 
 # ============================================================
 # 時間與路徑
@@ -80,6 +86,30 @@ def save_raw_event(record):
     log_file = get_log_file()
     with log_file.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+def get_debug_tail_file():
+    return LOG_DIR / "debug_recent.jsonl"
+
+def append_debug_tail(record):
+    """維護一份固定筆數的「最近訊息」小檔案，方便快速 debug，不用開整天的大檔案。
+    這裡用「讀出全部→加一筆→只留最後 N 筆→整檔重寫」的簡單做法：
+    因為固定只有 DEBUG_TAIL_SIZE 筆（預設 1000），檔案本身不大，
+    整檔重寫的成本在這個使用場景（Telegram 訊息，不是高頻資料流）可以忽略。
+    """
+    debug_file = get_debug_tail_file()
+    line = json.dumps(record, ensure_ascii=False, default=str)
+
+    lines = []
+    if debug_file.exists():
+        with debug_file.open("r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+    lines.append(line + "\n")
+    if len(lines) > DEBUG_TAIL_SIZE:
+        lines = lines[-DEBUG_TAIL_SIZE:]
+
+    with debug_file.open("w", encoding="utf-8") as f:
+        f.writelines(lines)
 
 # ============================================================
 # 按鈕解析
@@ -152,6 +182,8 @@ def is_image_message(message):
     return mime_type.startswith("image/")
 
 async def download_media_if_needed(message, chat_id, message_id, event_type):
+    if not DOWNLOAD_MEDIA_ENABLED:
+        return None
     if not is_image_message(message):
         return None
 
@@ -234,9 +266,17 @@ async def process_message(message, event_type):
         "media": media_info,
         "image_path": image_path,
         "is_image": image_path is not None,
+        "sent_by_bot": is_self_sent(chat_id, message.id),
     }
 
     save_raw_event(record)
+    append_debug_tail(record)
+
+    if ON_RECORD_CALLBACK is not None:
+        try:
+            await ON_RECORD_CALLBACK(record)
+        except Exception as e:
+            print(f"[WARN] 外部 callback 執行失敗（不影響 monitor 本身）：chat={chat_id} msg={message.id} 錯誤：{e}")
 
     if ARGS.watch:
         print_watch_line(record)
