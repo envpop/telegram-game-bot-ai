@@ -23,3 +23,10 @@ logs/
 
 # Notepad++ 備份
 *.bak
+
+# Ignore everything under data/
+data/*
+
+# But keep the shared common data
+!data/common/
+!data/common/**
