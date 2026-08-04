@@ -6,6 +6,7 @@ executor.py —— 輸出層
 
 功能：
   send_now(text)                          立刻送出一筆指令
+  click_button(chat_id, message_id, data) 點擊一顆 inline 按鈕（效果同真人點擊）
   send_sequence(commands, interval)       依序送出多筆指令，中間間隔幾秒
   schedule_at(run_at, text)               排定在指定時間送出一次
   schedule_every(interval_seconds, text)  建立固定週期重複送出的背景任務
@@ -17,6 +18,8 @@ executor.py —— 輸出層
 import asyncio
 import json
 from datetime import datetime, timezone, timedelta
+
+from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
 
 from telegram_client import client, BASE_DIR, mark_as_self_sent
 
@@ -71,6 +74,42 @@ async def send_now(text, chat_id=None, reason=None):
     _log_action(record)
 
     print(f"[SENT] → {record['chat_name']}：{text}" + (f"（原因：{reason}）" if reason else ""))
+    return record
+
+
+async def click_button(chat_id, message_id, data, button_text=None, reason=None):
+    """點擊一顆 inline 按鈕，效果跟真人手動點擊完全相同（同一個 API 呼叫）。
+
+    chat_id / message_id：按鈕所在的訊息位置（從 monitor.py 記錄的 raw log 取得）。
+    data：monitor.py 記錄的按鈕 data 字串（例如 "sat:190739112:tr_atk"）。
+    button_text：按鈕上顯示的文字（例如 "🗡️ 攻擊特訓"），純粹讓 log／print 可讀，
+                 不影響實際點擊行為。
+    """
+    data_bytes = data.encode("utf-8")
+
+    result = await client(GetBotCallbackAnswerRequest(
+        peer=chat_id,
+        msg_id=message_id,
+        data=data_bytes,
+    ))
+    toast = getattr(result, "message", None)  # 遊戲點擊後彈出的提示文字（若有）
+
+    record = {
+        "sent_at": _now_local(),
+        "chat_id": chat_id,
+        "chat_name": CHAT_NAMES.get(chat_id, str(chat_id)),
+        "action": "click_button",
+        "message_id": message_id,
+        "button_text": button_text,
+        "data": data,
+        "response_toast": toast,
+        "reason": reason,
+    }
+    _log_action(record)
+
+    display = button_text or data
+    extra = f"（回應：{toast}）" if toast else ""
+    print(f"[CLICK] → {record['chat_name']}：{display}{extra}" + (f"（原因：{reason}）" if reason else ""))
     return record
 
 

@@ -122,11 +122,18 @@ def extract_buttons(message):
 
     for row_index, row in enumerate(message.buttons):
         for column_index, button in enumerate(row):
+            # message.buttons 裡的每個 button 是 Telethon 的 custom.MessageButton
+            # wrapper，type(button).__name__ 永遠是 "MessageButton"，看不出實際
+            # 按鈕種類。真正的原始類型（KeyboardButtonCallback／KeyboardButtonUrl／
+            # KeyboardButton 等）在 button.button 這個內層屬性裡。
+            raw_button = getattr(button, "button", None)
+            button_type = type(raw_button).__name__ if raw_button is not None else type(button).__name__
+
             item = {
                 "row": row_index + 1,
                 "column": column_index + 1,
                 "text": getattr(button, "text", None),
-                "type": type(button).__name__,
+                "type": button_type,
             }
 
             data = getattr(button, "data", None)

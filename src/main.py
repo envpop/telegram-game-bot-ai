@@ -22,6 +22,7 @@ import monitor
 import executor
 import backpack_watcher
 import inventory_parsers
+import satellite_training_strategy
 from parser import MessageRouter
 from log_maintenance import run_maintenance
 
@@ -42,6 +43,11 @@ REACTION_RULES = load_reaction_rules()
 
 # 記錄每條規則上次觸發的時間，避免同一個提示訊息短時間內重複觸發、洗版送出重複指令
 _last_fired_at = {}
+
+# 記錄「使用者剛打了培育指令，還在等 BOT 第一則回覆」的狀態，key 是 chat_id。
+# 只有這個旗標是 True 的時候，收到的下一則 main_menu 訊息才需要判斷新建/續練，
+# 判斷完（或發現不是預期的回覆）就要清掉，避免之後每回合都誤判。
+_awaiting_training_reply = {}
 
 
 # ============================================================
@@ -95,12 +101,23 @@ async def dispatch_action(record, parsed):
 
     source_type = parsed.get("source_type")
 
+    # 使用者打「培育」指令：記下來，等下一則 BOT 回覆時判斷是新建還是續練。
+    # 這個判斷要在「不是 server/announcement 就 return」之前做，
+    # 因為使用者指令本身的 source_type 是 "user"。
+    if source_type == "user" and parsed.get("command") == "培育":
+        _awaiting_training_reply[record.get("chat_id")] = True
+
     # 目前的反應規則只針對 server/announcement 的內容做比對；
     # 使用者自己打的指令不需要 BOT 反應（那是你自己在做的事）。
     if source_type not in ("server", "announcement"):
         return
 
     text = record.get("text") or ""
+
+    # 消費「剛打了培育指令、正在等第一則回覆」的旗標——不管這則伺服器訊息
+    # 是不是培育相關，都算是「等到了下一則回覆」，旗標就該清掉，避免卡住
+    # 一直殘留到很久之後某次不相關的培育訊息才被誤判。
+    was_awaiting_training_reply = _awaiting_training_reply.pop(record.get("chat_id"), False)
 
     # ---- 我的陀螺：整份覆蓋存進個人資料 ----
     if source_type == "server" and inventory_parsers.is_my_tops_message(text):
@@ -135,6 +152,35 @@ async def dispatch_action(record, parsed):
     if desc is not None:
         backpack_watcher.save_item_description(BASE_DIR, desc["display_name"], desc)
         print(f"[道具說明] 已記錄：{desc['display_name']} → {desc['description']}")
+        return
+
+    # ---- 群星計畫（衛星培育）：帶按鈕的訊息，交給策略層決定要點哪顆按鈕 ----
+    # 判斷邏輯全部在 satellite_training_strategy.py，這裡只負責呼叫、
+    # 把決策結果送去 executor.click_button 執行。
+    buttons = record.get("buttons")
+    if source_type == "server" and buttons:
+        chat_id = record.get("chat_id")
+
+        # 如果這是「培育」指令送出後的第一則回覆，判斷新建還是續練，只判斷這一次。
+        if was_awaiting_training_reply:
+            catalog = satellite_training_strategy.load_catalog(BASE_DIR)
+            session_kind = satellite_training_strategy.classify_session_start(text, catalog)
+            if session_kind == "new":
+                print("[群星計畫] 🆕 開始新一輪培育（新建衛星）")
+            elif session_kind == "continuing":
+                print("[群星計畫] ▶️ 續練進行中的衛星")
+
+        action = satellite_training_strategy.decide_action(text, buttons, BASE_DIR)
+        if action:
+            await executor.click_button(
+                chat_id=chat_id,
+                message_id=record.get("message_id"),
+                data=action["data"],
+                button_text=action["button_text"],
+                reason=action["reason"],
+            )
+        else:
+            print(f"[群星計畫] ⚠️ 策略無法判斷要選哪個按鈕，需要人工介入：{text[:40]}...")
         return
 
     # ---- 一般觸發規則（reaction_rules.json）----
