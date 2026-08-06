@@ -22,6 +22,10 @@ satellite_training_strategy.py —— 群星計畫（衛星培育）決策層
     action = decide_action(record["text"], record["buttons"])
     if action:
         await click_button(chat_id, message_id, action["data"], action["button_text"], reason=action["reason"])
+
+另外也收著「剛打了培育指令，等待 BOT 第一則回覆」這個狀態（mark_awaiting_reply /
+consume_awaiting_reply）。觸發點是使用者指令、消費點是 BOT 回覆，兩個不同來源，
+但都屬於「培育」同一件事，所以狀態跟判斷邏輯放在同一支檔案，main.py 不自己存狀態。
 """
 
 import json
@@ -29,6 +33,33 @@ import re
 from pathlib import Path
 
 _CATALOG_CACHE = None
+
+
+# ============================================================
+# 「剛打了培育指令，等待 BOT 第一則回覆」狀態
+# ============================================================
+# 這個狀態的觸發點（使用者打「培育」指令）跟消費點（BOT 回覆時判斷新建/續練）
+# 是兩個不同來源的事件（一個是 user 指令、一個是 server 回應），但都屬於
+# 「培育」這一件事，所以狀態本身也收在這支檔案裡管理，main.py 只負責在
+# 對的時間點呼叫，不自己存狀態。
+#
+# key 是 chat_id：同一個 chat 同時只會有一輪培育在等回覆。
+_awaiting_reply_by_chat = {}
+
+
+def mark_awaiting_reply(chat_id):
+    """使用者剛打了「培育」指令，記下來等下一則 BOT 回覆時判斷新建/續練。"""
+    _awaiting_reply_by_chat[chat_id] = True
+
+
+def consume_awaiting_reply(chat_id):
+    """取出並清掉這個 chat 的等待旗標（不論結果是 True 或 False 都會清掉）。
+
+    呼叫端應該對「每一則」server/announcement 訊息都呼叫一次，不管訊息內容
+    是不是培育相關——旗標只代表「等到下一則回覆了沒」，不是「是不是培育
+    訊息」，這樣才不會因為旗標卡住殘留到很久之後某次不相關的訊息才誤判。
+    """
+    return _awaiting_reply_by_chat.pop(chat_id, False)
 
 
 def _catalog_path(base_dir):

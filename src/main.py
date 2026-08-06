@@ -2,29 +2,30 @@
 main.py —— BOT 核心 / 協調器
 
 職責分工：
-  telegram_client.py  唯一的連線來源，monitor 跟 executor 共用
-  monitor.py           只負責擷取 Telegram 訊息、存成 raw log（純接收）
-  executor.py          只負責送出指令、記錄動作 log（純輸出，含排程/連續送出）
-  parser.py            只負責分析一筆 record，回傳結構化的判斷結果
-  main.py               （這支檔案）協調以上四者：
+  telegram_client.py    唯一的連線來源，monitor 跟 executor 共用
+  monitor.py             只負責擷取 Telegram 訊息、存成 raw log（純接收）
+  executor.py            只負責送出指令、記錄動作 log（純輸出，含連續送出）
+  scheduler.py            /sched 指令解析 + 排程執行/管理（延後、重複、取消）
+  parser.py               只負責分析一筆 record，回傳結構化的判斷結果
+  xxx_strategy.py         各自「事件」的判斷邏輯（世界王／衛星培育／資料同步…），
+                          只負責「判斷該做什麼」，不呼叫 executor、不存跨事件狀態。
+  main.py                （這支檔案）協調以上各者：
                 1. 啟動 monitor 的擷取
                 2. 每筆訊息存檔後，丟給 parser 分析
                 3. 用整理過、好讀的樣式印在畫面上
-                4. 依照反應規則表判斷要不要呼叫 executor 送出指令
+                4. 把「決定要不要做什麼」的工作分派給對應的 strategy 模組，
+                   自己只留通用的反應規則表（reaction_rules.json）判斷
 """
 
 import asyncio
 import json
 import time
-from datetime import datetime, timedelta
 
 from telegram_client import client, BASE_DIR
 import monitor
 import executor
 import scheduler
-from executor import LOCAL_TZ
-import backpack_watcher
-import inventory_parsers
+import profile_sync_strategy
 import satellite_training_strategy
 import world_boss_strategy
 from parser import MessageRouter
@@ -60,11 +61,6 @@ REACTION_RULES = load_reaction_rules()
 
 # 記錄每條規則上次觸發的時間，避免同一個提示訊息短時間內重複觸發、洗版送出重複指令
 _last_fired_at = {}
-
-# 記錄「使用者剛打了培育指令，還在等 BOT 第一則回覆」的狀態，key 是 chat_id。
-# 只有這個旗標是 True 的時候，收到的下一則 main_menu 訊息才需要判斷新建/續練，
-# 判斷完（或發現不是預期的回覆）就要清掉，避免之後每回合都誤判。
-_awaiting_training_reply = {}
 
 
 # ============================================================
@@ -120,9 +116,10 @@ async def dispatch_action(record, parsed):
 
     # 使用者打「培育」指令：記下來，等下一則 BOT 回覆時判斷是新建還是續練。
     # 這個判斷要在「不是 server/announcement 就 return」之前做，
-    # 因為使用者指令本身的 source_type 是 "user"。
+    # 因為使用者指令本身的 source_type 是 "user"。狀態本身存在
+    # satellite_training_strategy.py（跟消費端同一支檔案，見該檔說明）。
     if source_type == "user" and parsed.get("command") == "培育":
-        _awaiting_training_reply[record.get("chat_id")] = True
+        satellite_training_strategy.mark_awaiting_reply(record.get("chat_id"))
 
     # 目前的反應規則只針對 server/announcement 的內容做比對；
     # 使用者自己打的指令不需要 BOT 反應（那是你自己在做的事）。
@@ -134,7 +131,7 @@ async def dispatch_action(record, parsed):
     # 消費「剛打了培育指令、正在等第一則回覆」的旗標——不管這則伺服器訊息
     # 是不是培育相關，都算是「等到了下一則回覆」，旗標就該清掉，避免卡住
     # 一直殘留到很久之後某次不相關的培育訊息才被誤判。
-    was_awaiting_training_reply = _awaiting_training_reply.pop(record.get("chat_id"), False)
+    was_awaiting_training_reply = satellite_training_strategy.consume_awaiting_reply(record.get("chat_id"))
 
     # ---- 公告頻道（世界王等）：依序問過 ANNOUNCEMENT_STRATEGIES，第一個給出
     # 動作的模組獲勝就送出，其餘不用再問。純資訊公告（例如定期戰況播報）
@@ -147,48 +144,31 @@ async def dispatch_action(record, parsed):
                 await executor.send_now(action["command"], chat_id=action["chat_id"], reason=action["reason"])
                 return
             if action["mode"] == "scheduled":
-                run_at = datetime.now(LOCAL_TZ) + timedelta(seconds=action["delay_seconds"])
-                asyncio.create_task(executor.schedule_at(
-                    run_at, action["command"], chat_id=action["chat_id"], reason=action["reason"]
-                ))
-                print(f"[公告觸發] ⏳ {action['reason']}，已排程 {action['delay_seconds']} 秒後執行")
+                job = scheduler.ScheduledJob(
+                    command_text=action["command"],
+                    delay_seconds=action["delay_seconds"],
+                    chat_id=action["chat_id"],
+                    reason=action["reason"],
+                )
+                job_id = scheduler.schedule(job, executor.send_now)
+                print(f"[公告觸發] ⏳ {action['reason']}，已排程 {job_id}"
+                      f"（{action['delay_seconds']:.0f} 秒後執行，"
+                      f"可用 /sched list 查看、/sched cancel {job_id} 取消）")
                 return
         return  # 沒有任何模組判斷出動作，純資訊公告，不需要往下處理
 
-    # ---- 我的陀螺：整份覆蓋存進個人資料 ----
-    if source_type == "server" and inventory_parsers.is_my_tops_message(text):
-        result = inventory_parsers.parse_my_tops(text)
-        inventory_parsers.save_tops_snapshot(BASE_DIR, ACCOUNT_ID, result)
-        print(f"[陀螺清單] 已更新，共 {result['total_count']} 顆")
-        return
-
-    # ---- 衛星圖鑑（含 alias 我的衛星）：整份覆蓋存進個人資料 ----
-    if source_type == "server" and inventory_parsers.is_satellite_catalog_message(text):
-        result = inventory_parsers.parse_satellite_catalog(text)
-        inventory_parsers.save_satellites_snapshot(BASE_DIR, ACCOUNT_ID, result)
-        print(f"[衛星清單] 已更新，共 {result['total_count']} 顆")
-        return
-
-    # ---- 背包偵測：解析內容,對沒看過的道具自動查詢說明,並存下個人持有數量 ----
-    if source_type == "server" and backpack_watcher.is_backpack_message(text):
-        result = backpack_watcher.parse_backpack(text)
-
-        backpack_watcher.save_inventory_snapshot(BASE_DIR, ACCOUNT_ID, result)
-
-        new_items = backpack_watcher.find_new_items(BASE_DIR, result)
-        if new_items:
-            print(f"[背包] 發現 {len(new_items)} 個沒看過的道具：{new_items}")
-            backpack_watcher.mark_items_as_queried(BASE_DIR, new_items)
-            commands = [f"道具說明 {name}" for name in new_items]
-            await executor.send_sequence(commands, interval_seconds=2, reason="背包新道具自動查詢")
-        return
-
-    # ---- 道具說明回應：解析後存進共通資料庫 ----
-    desc = backpack_watcher.parse_item_description(text)
-    if desc is not None:
-        backpack_watcher.save_item_description(BASE_DIR, desc["display_name"], desc)
-        print(f"[道具說明] 已記錄：{desc['display_name']} → {desc['description']}")
-        return
+    # ---- 陀螺／衛星／背包／道具說明：四種都只是「更新自己資料庫」，
+    # 判斷跟存檔邏輯統一收在 profile_sync_strategy.py，這裡只負責把
+    # 結果印出來，命中時需要的話再呼叫 executor 送出查詢指令。 ----
+    if source_type == "server":
+        sync_result = profile_sync_strategy.handle_server_message(text, BASE_DIR, ACCOUNT_ID)
+        if sync_result["handled"]:
+            print(sync_result["log"])
+            if sync_result["commands"]:
+                await executor.send_sequence(
+                    sync_result["commands"], interval_seconds=2, reason=sync_result["commands_reason"]
+                )
+            return
 
     # ---- 世界王查詢回覆（第三道保險）：使用者手動查詢「世界王」時，
     # 順便檢查這隻王今天打過沒、還活著嗎，需要的話補一刀。

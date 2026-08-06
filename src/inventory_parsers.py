@@ -9,9 +9,12 @@ inventory_parsers.py —— 「我的陀螺」「衛星圖鑑」伺服器回應 
 """
 
 import json
+import logging
 import re
 
 from data_store import account_dir
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -51,8 +54,14 @@ def parse_my_tops(text):
             "status": status,
         })
 
+    declared_count, is_complete = check_completeness(
+        text, len(tops), list_label="我的陀螺"
+    )
+
     return {
         "total_count": len(tops),
+        "declared_count": declared_count,
+        "is_complete": is_complete,
         "tops": tops,
     }
 
@@ -132,8 +141,25 @@ def parse_satellite_catalog(text):
     if current is not None:
         satellites.append(current)
 
+    # 衛星是三行一組（標題／加成技能／槽位），如果最後一筆缺「槽位」那行，
+    # 代表這組在解析完標題（甚至加成技能）後，訊息就被切斷了——
+    # 這比對「宣告數量」更直接，能抓到「最後一則剛好卡在某顆衛星中間」的情況。
+    last_entry_incomplete = bool(satellites) and "slots" not in satellites[-1]
+    if last_entry_incomplete:
+        logger.warning(
+            "[衛星圖鑑] 疑似被 TG 分則截斷：最後一筆「%s」缺少槽位資訊（可能整段被腰斬）",
+            satellites[-1]["name"],
+        )
+
+    declared_count, declared_match = check_completeness(
+        text, len(satellites), list_label="衛星圖鑑"
+    )
+    is_complete = False if last_entry_incomplete else declared_match
+
     return {
         "total_count": len(satellites),
+        "declared_count": declared_count,
+        "is_complete": is_complete,
         "equip_limit": _extract_equip_limit(text),
         "satellites": satellites,
     }
@@ -145,6 +171,57 @@ _EQUIP_LIMIT_PATTERN = re.compile(r"目前裝備上限\s*(\d+)")
 def _extract_equip_limit(text):
     m = _EQUIP_LIMIT_PATTERN.search(text)
     return int(m.group(1)) if m else None
+
+
+# ============================================================
+# 完整性檢查（偵測 TG 自動分則造成的截斷）
+# ============================================================
+#
+# 圖鑑類回應開頭通常會宣告「共 N 顆／N 顆」，但訊息過長時 TG 會自動拆成多則
+# 送達。若呼叫端沒有把所有分則接起來就丟進 parser，解析出的筆數會少於宣告值。
+# 這裡只做「比對＋記錄」，不負責決定何時該合併多則訊息（那是 monitor 層的事），
+# 純粹是最後一道防線：算出來的筆數對不上宣告值，就記一筆 warning，並把
+# declared_count / is_complete 放進解析結果，讓上層（executor／查詢指令）
+# 自行決定要不要重試、提示使用者，或標記這份快照不可信。
+
+_DECLARED_COUNT_PATTERN = re.compile(r"(?:共\s*)?(\d+)\s*(?:顆|隻|個|支)")
+
+
+def check_completeness(text, actual_count, count_pattern=_DECLARED_COUNT_PATTERN, list_label="清單"):
+    """比對文字開頭宣告的數量跟實際解析出的筆數。
+
+    count_pattern 可自訂，方便之後其他清單型式（宣告格式不是「N 顆」）沿用
+    同一套機制，不用重寫比對邏輯。
+
+    回傳 (declared_count, is_complete)：
+      - declared_count 為 None：文字裡沒抓到宣告數字，視為無法判斷（不記警告）。
+      - is_complete 為 False：抓到宣告數字但跟實際筆數對不上，視為疑似截斷。
+    """
+    m = count_pattern.search(text)
+    if not m:
+        return None, None
+
+    declared = int(m.group(1))
+    is_complete = declared == actual_count
+
+    if not is_complete:
+        logger.warning(
+            "[%s] 疑似被 TG 分則截斷：宣告 %d 筆，實際解析出 %d 筆",
+            list_label, declared, actual_count,
+        )
+
+    return declared, is_complete
+
+
+def merge_message_parts(parts):
+    """把同一批被 TG 拆成多則的原始文字，依送達順序串接成一段完整文字。
+
+    parser 是逐行比對（衛星三行一組／陀螺一行一筆），不依賴「訊息邊界」，
+    所以只要 parts 順序正確，單純串接即可餵給 parse_my_tops / parse_satellite_catalog。
+    實際要在什麼時機把多則訊息判定為「同一批、該合併」（例如同一 chat_id、
+    短時間內連續到達、且不是新的觸發指令），交給 monitor 層處理。
+    """
+    return "\n".join(p.strip("\n") for p in parts if p)
 
 
 # ============================================================
