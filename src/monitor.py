@@ -32,7 +32,7 @@ DOWNLOAD_MEDIA_ENABLED = False
 
 # 「最近訊息」小檔案：固定只保留最近 N 筆，方便快速 debug，
 # 不用每次都打開一整天份的完整 log。跟完整 log 分開存放，永遠很小。
-DEBUG_TAIL_SIZE = 1000
+DEBUG_TAIL_SIZE = 300
 
 # ============================================================
 # CLI

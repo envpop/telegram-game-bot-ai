@@ -8,8 +8,8 @@ from telethon import TelegramClient
 
 load_dotenv()
 
-api_id = int(os.environ["MAIN_API_ID"])
-api_hash = os.environ["MAIN_API_HASH"]
+api_id = int(os.environ["TEST_API_ID"])
+api_hash = os.environ["TEST_API_HASH"]
 
 session_path = Path("accounts") / "test" / "telegram"
 

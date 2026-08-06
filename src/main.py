@@ -16,17 +16,34 @@ main.py —— BOT 核心 / 協調器
 import asyncio
 import json
 import time
+from datetime import datetime, timedelta
 
 from telegram_client import client, BASE_DIR
 import monitor
 import executor
+import scheduler
+from executor import LOCAL_TZ
 import backpack_watcher
 import inventory_parsers
 import satellite_training_strategy
+import world_boss_strategy
 from parser import MessageRouter
 from log_maintenance import run_maintenance
 
 router = MessageRouter()
+
+# ── 摸摸熊戰鬥陀螺頻道（parser.ANNOUNCEMENT_CHAT_ID）的觸發規則清單 ──
+# 這個頻道除了世界王，之後還會有其他種類的重要公告需要接自動觸發。
+# 每加一種新公告觸發，照 world_boss_strategy.py 的模式寫一個新模組：
+#   - 一份 data/common/xxx_catalog.json（事件目錄，trigger_pattern 等）
+#   - 一支 src/xxx_strategy.py，提供：
+#       load_catalog(base_dir) -> dict
+#       decide_action(text, catalog) -> {"mode", "delay_seconds", "command", "chat_id", "reason"}
+# 寫好後把模組加進下面這個清單就好，dispatch_action() 裡的迴圈不用改。
+ANNOUNCEMENT_STRATEGIES = [
+    world_boss_strategy,
+    # 之後新增其他公告觸發時，把新模組加在這裡
+]
 
 # 目前登入的帳號 ID，啟動時取得一次、快取起來，用於資料庫隔離
 # （data/{帳號ID}/... 底下的資料只屬於這個帳號，換帳號登入就會自動切換資料夾）
@@ -119,6 +136,25 @@ async def dispatch_action(record, parsed):
     # 一直殘留到很久之後某次不相關的培育訊息才被誤判。
     was_awaiting_training_reply = _awaiting_training_reply.pop(record.get("chat_id"), False)
 
+    # ---- 公告頻道（世界王等）：依序問過 ANNOUNCEMENT_STRATEGIES，第一個給出
+    # 動作的模組獲勝就送出，其餘不用再問。純資訊公告（例如定期戰況播報）
+    # 全部模組都會回傳 None，自然往下 return，不會誤觸發任何指令。 ----
+    if source_type == "announcement":
+        for strategy in ANNOUNCEMENT_STRATEGIES:
+            catalog = strategy.load_catalog(BASE_DIR)
+            action = strategy.decide_action(text, catalog, BASE_DIR, ACCOUNT_ID)
+            if action["mode"] == "now":
+                await executor.send_now(action["command"], chat_id=action["chat_id"], reason=action["reason"])
+                return
+            if action["mode"] == "scheduled":
+                run_at = datetime.now(LOCAL_TZ) + timedelta(seconds=action["delay_seconds"])
+                asyncio.create_task(executor.schedule_at(
+                    run_at, action["command"], chat_id=action["chat_id"], reason=action["reason"]
+                ))
+                print(f"[公告觸發] ⏳ {action['reason']}，已排程 {action['delay_seconds']} 秒後執行")
+                return
+        return  # 沒有任何模組判斷出動作，純資訊公告，不需要往下處理
+
     # ---- 我的陀螺：整份覆蓋存進個人資料 ----
     if source_type == "server" and inventory_parsers.is_my_tops_message(text):
         result = inventory_parsers.parse_my_tops(text)
@@ -153,6 +189,17 @@ async def dispatch_action(record, parsed):
         backpack_watcher.save_item_description(BASE_DIR, desc["display_name"], desc)
         print(f"[道具說明] 已記錄：{desc['display_name']} → {desc['description']}")
         return
+
+    # ---- 世界王查詢回覆（第三道保險）：使用者手動查詢「世界王」時，
+    # 順便檢查這隻王今天打過沒、還活著嗎，需要的話補一刀。
+    # 這個觸發跟公告頻道的 ANNOUNCEMENT_STRATEGIES 是分開處理的，
+    # 因為查詢回覆出現在不同的 chat（摸熊神社），格式也不一樣。 ----
+    if source_type == "server":
+        wb_catalog = world_boss_strategy.load_catalog(BASE_DIR)
+        wb_action = world_boss_strategy.decide_action_from_status_query(text, wb_catalog, BASE_DIR, ACCOUNT_ID)
+        if wb_action["mode"] == "now":
+            await executor.send_now(wb_action["command"], chat_id=wb_action["chat_id"], reason=wb_action["reason"])
+            return
 
     # ---- 群星計畫（衛星培育）：帶按鈕的訊息，交給策略層決定要點哪顆按鈕 ----
     # 判斷邏輯全部在 satellite_training_strategy.py，這裡只負責呼叫、
@@ -217,7 +264,6 @@ async def dispatch_action(record, parsed):
 # ============================================================
 # 跟 BOT 自動觸發的指令走同一條路徑（executor.send_now），
 # 一樣會記錄進 actions_sent.jsonl，reason 標成「手動輸入」方便之後區分。
-
 async def terminal_input_loop():
     loop = asyncio.get_event_loop()
     print("💬 可以直接在這裡輸入指令送出遊戲（Enter 送出，Ctrl+C 結束整個程式）")
@@ -226,13 +272,39 @@ async def terminal_input_loop():
             text = await loop.run_in_executor(None, input, "> ")
         except (EOFError, KeyboardInterrupt):
             break
-
         text = text.strip()
         if not text:
             continue
 
-        await executor.send_now(text, reason="手動輸入(終端機)")
+        if text.startswith("/"):
+            # 開頭是 / 的一律視為系統功能指令保留字，不認得就擋下來，絕不送到遊戲。
+            try:
+                parsed = scheduler.parse_sched(text)
+            except scheduler.SchedParseError as e:
+                print(f"[錯誤] {e}")
+                continue
 
+            if parsed is None:
+                print(f"[錯誤] 不認得的指令「{text}」，開頭 / 的訊息不會被送出。\n{scheduler.SCHED_USAGE}")
+                continue
+
+            if isinstance(parsed, scheduler.SchedControl):
+                if parsed.action == "list":
+                    jobs = scheduler.list_jobs()
+                    if not jobs:
+                        print("[SCHED] 目前沒有進行中的排程")
+                    else:
+                        for j in jobs:
+                            print(f"  {j['job_id']} ｜ {j['command']} ｜ repeat={j['repeat']}")
+                elif parsed.action == "cancel":
+                    ok = scheduler.cancel(parsed.target)
+                    print(f"[SCHED] 已取消 {parsed.target}" if ok else f"[SCHED] 找不到 {parsed.target}")
+            else:
+                job_id = scheduler.schedule(parsed, executor.send_now)
+                print(f"[SCHED] 已排程 {job_id}：{parsed.command_text}"
+                      f"（delay={parsed.delay_seconds:.0f}s, repeat={parsed.repeat}）")
+        else:
+            await executor.send_now(text, reason="手動輸入(終端機)")
 
 async def on_record(record):
     if record.get("sent_by_bot"):
