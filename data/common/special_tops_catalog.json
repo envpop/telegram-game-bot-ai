@@ -1,0 +1,43 @@
+{
+  "旋王": {
+    "赤焰旋王・狂牙GO":   {"build": "攻擊型", "element": null, "atk": 90,  "def": 70,  "hp": 73,  "total": 233},
+    "蒼海旋王・不滅GO":   {"build": "持久型", "element": null, "atk": 70,  "def": 73,  "hp": 95,  "total": 238},
+    "磐岩旋王・絕盾GO":   {"build": "防禦型", "element": null, "atk": 70,  "def": 95,  "hp": 73,  "total": 238},
+    "原初旗艦・摸摸GO":   {"build": "平衡型", "element": null, "atk": 80,  "def": 79,  "hp": 80,  "total": 239},
+    "雷鳴旋王・轟天GO":   {"build": "攻擊型", "element": "金",  "atk": 91,  "def": 70,  "hp": 74,  "total": 235},
+    "翠森旋王・盤根GO":   {"build": "持久型", "element": "木",  "atk": 71,  "def": 75,  "hp": 94,  "total": 240},
+    "月影旋王・幽幻GO":   {"build": "防禦型", "element": "水",  "atk": 71,  "def": 94,  "hp": 74,  "total": 239},
+    "曜陽旋王・日冕GO":   {"build": "平衡型", "element": "火",  "atk": 81,  "def": 80,  "hp": 80,  "total": 241}
+  },
+  "旋神": {
+    "雷霆神熊・摸摸轟天GO": {"build": "攻擊型", "element": "金", "atk": 106, "def": 80,  "hp": 82,  "total": 268},
+    "焚天神熊・摸摸赤焱GO": {"build": "攻擊型", "element": "火", "atk": 107, "def": 79,  "hp": 82,  "total": 268},
+    "崩嶽神熊・摸摸撼地GO": {"build": "攻擊型", "element": "土", "atk": 106, "def": 81,  "hp": 81,  "total": 268},
+    "玄冥神熊・摸摸寒淵GO": {"build": "防禦型", "element": "水", "atk": 80,  "def": 108, "hp": 80,  "total": 268},
+    "磐古神熊・摸摸鎮岳GO": {"build": "防禦型", "element": "土", "atk": 81,  "def": 107, "hp": 80,  "total": 268},
+    "滄溟神熊・摸摸幽瀾GO": {"build": "持久型", "element": "水", "atk": 80,  "def": 83,  "hp": 105, "total": 268},
+    "蒼穹神熊・摸摸盤龍GO": {"build": "持久型", "element": "木", "atk": 81,  "def": 82,  "hp": 105, "total": 268},
+    "曜金神熊・摸摸太白GO": {"build": "平衡型", "element": "金", "atk": 90,  "def": 89,  "hp": 89,  "total": 268},
+    "混元神熊・摸摸無極GO": {"build": "平衡型", "element": "火", "atk": 89,  "def": 90,  "hp": 89,  "total": 268},
+    "太初神熊・摸摸原初GO": {"build": "平衡型", "element": "木", "atk": 90,  "def": 90,  "hp": 90,  "total": 270}
+  },
+  "UR精選": {
+    "終式・獄熊・雷咆斬": {"build": "攻擊型", "element": null, "atk": 75, "def": 70, "hp": 62, "total": 207},
+    "極・天熊・滅卻牙":   {"build": "防禦型", "element": null, "atk": 64, "def": 63, "hp": 74, "total": 201},
+    "卍解・血熊・雷咆爪": {"build": "持久型", "element": null, "atk": 71, "def": 65, "hp": 74, "total": 210},
+    "真・光熊・極道陣":   {"build": "平衡型", "element": null, "atk": 68, "def": 70, "hp": 70, "total": 208}
+  },
+  "鑄造": {
+    "⚡️":   {"build": "持久型", "element": "金", "atk": 69, "def": 75, "hp": 75, "total": 219},
+    "雪花":  {"build": "平衡型", "element": "水", "atk": 68, "def": 74, "hp": 67, "total": 209},
+    "森羅✦2": {"build": "防禦型", "element": "土", "atk": 62, "def": 70, "hp": 74, "total": 206},
+    "🥹":    {"build": "攻擊型", "element": "木", "atk": 72, "def": 73, "hp": 68, "total": 219},
+    "🍌✦2":  {"build": "持久型", "element": "水", "atk": 65, "def": 70, "hp": 74, "total": 210},
+    "🫥":    {"build": "攻擊型", "element": "木", "atk": 70, "def": 69, "hp": 63, "total": 208},
+    "🐍":    {"build": "攻擊型", "element": "金", "atk": 73, "def": 56, "hp": 72, "total": 207},
+    "🦑":    {"build": "持久型", "element": "金", "atk": 72, "def": 65, "hp": 68, "total": 211},
+    "🍄":    {"build": "持久型", "element": "水", "atk": 70, "def": 69, "hp": 72, "total": 217},
+    "🥀":    {"build": "持久型", "element": "木", "atk": 74, "def": 65, "hp": 72, "total": 217},
+    "🏎":    {"build": "持久型", "element": "木", "atk": 75, "def": 63, "hp": 71, "total": 215}
+  }
+}

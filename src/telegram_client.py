@@ -60,8 +60,8 @@ API_ID = _creds["api_id"]
 API_HASH = _creds["api_hash"]
 SESSION_NAME = ACTIVE_ACCOUNT_CONFIG["session_name"]
 
-print(f"[telegram_client] 使用帳號「{ACTIVE_ACCOUNT_CONFIG.get('label', ACTIVE_ACCOUNT_KEY)}」"
-      f"（憑證來源：{_creds['source']}，session：{SESSION_NAME}）")
+print(f"[telegram_client] 使用帳號「{ACTIVE_ACCOUNT_CONFIG.get('label', ACTIVE_ACCOUNT_KEY)}」")
+#      f"（憑證來源：{_creds['source']}，session：{SESSION_NAME})" #隱私問題先不顯示
 
 client = TelegramClient(
     SESSION_NAME,

@@ -1,0 +1,10 @@
+[
+  {
+    "name": "櫻花示警",
+    "enabled": true,
+    "watch_chat": "摸摸熊戰鬥陀螺",
+    "match": {"contains": "櫻花"},
+    "action": "/sched rep=100 int=1.5s-2.2s 連續活動塔",
+    "cooldown": "250s"
+  }
+]

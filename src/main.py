@@ -325,7 +325,7 @@ async def run():
     global ACCOUNT_ID
     me = await client.get_me()
     ACCOUNT_ID = me.id
-    print(f"目前登入帳號 ID：{ACCOUNT_ID}（資料庫將存於 data/{ACCOUNT_ID}/）")
+    print(f"目前登入帳號 ID：{ACCOUNT_ID} ") #（資料庫將存於 data/{ACCOUNT_ID}/）資料庫保密
     print()
 
     asyncio.create_task(terminal_input_loop())

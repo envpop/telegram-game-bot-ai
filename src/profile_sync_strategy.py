@@ -58,7 +58,7 @@ def _handled(log, commands=None, commands_reason=None):
 # 分則訊息都是遊戲/TG 緊接著送出，中間插入其他無關伺服器訊息的機率極低；
 # 如果之後發現誤吃到不相關訊息，可以再加時間窗限制。
 
-_pending_assembly = {}  # account_id -> {"kind": "tops"|"satellite", "parts": [str, ...], "started_at": float}
+_pending_assembly = {}  # account_id -> {"kind": "tops"|"satellite"|"bindings", "parts": [str, ...], "started_at": float}
 
 _ASSEMBLY_STALE_SECONDS = 30  # 組裝卡超過這麼久還沒完成就視為異常放棄，避免舊狀態一直誤吃之後的訊息
 
@@ -100,6 +100,9 @@ def handle_server_message(text, base_dir, account_id):
 
     if inventory_parsers.is_satellite_catalog_message(text):
         return _handle_satellite_start(text, base_dir, account_id)
+
+    if inventory_parsers.is_bindings_message(text):
+        return _handle_bindings_start(text, base_dir, account_id)
 
     if backpack_watcher.is_backpack_message(text):
         result = backpack_watcher.parse_backpack(text)
@@ -158,6 +161,42 @@ def _handle_satellite_start(text, base_dir, account_id):
     )
 
 
+def _handle_bindings_start(text, base_dir, account_id):
+    result = inventory_parsers.parse_bindings(text)
+    if result["is_complete"]:
+        return _finish_bindings(result, base_dir, account_id)
+
+    _start_assembly(account_id, "bindings", text)
+    return _handled(
+        f"[綁定一覽] 內容被截斷，等待後續分則中"
+        f"（目前 {result['total_count']}/{result['declared_count']} 顆）"
+    )
+
+
+def _finish_bindings(bindings_result, base_dir, account_id):
+    """綁定一覽解析完整後：讀回既有的陀螺清單快照，合併綁定資料，存回 tops.json。
+
+    這裡故意不另外存一份 bindings.json——綁定資料本來就是依附在陀螺身上的
+    養成資訊，合併進 tops.json 的 detailed 裡才是使用時真正需要的形狀，
+    分開存反而多一道「要用時還要自己 join」的麻煩（討論見對話紀錄）。
+    """
+    tops_result = inventory_parsers.load_tops_snapshot(base_dir, account_id)
+    if tops_result is None:
+        return _handled(
+            f"[綁定一覽] 解析完成（共 {bindings_result['total_count']} 顆），"
+            f"但找不到既有的陀螺清單快照，無法合併——請先觸發一次「我的陀螺」再重新查詢綁定一覽"
+        )
+
+    inventory_parsers.annotate_special_source(tops_result.get("detailed", []), base_dir, account_id)
+    merge_stats = inventory_parsers.merge_bindings_into_tops(tops_result, bindings_result)
+    inventory_parsers.save_tops_snapshot(base_dir, account_id, tops_result)
+
+    log = f"[綁定一覽] 已合併進陀螺清單，配對成功 {merge_stats['matched_count']}/{merge_stats['total_bindings']} 顆"
+    if merge_stats["unmatched_binding_count"]:
+        log += f"（⚠️ {merge_stats['unmatched_binding_count']} 筆找不到對應陀螺，詳見 log）"
+    return _handled(log)
+
+
 def _continue_assembly(pending, text, base_dir, account_id):
     pending["parts"].append(text)
     merged = inventory_parsers.merge_message_parts(pending["parts"])
@@ -170,6 +209,16 @@ def _continue_assembly(pending, text, base_dir, account_id):
             return _handled(f"[陀螺清單] 分頁組裝完成，共 {result['total_count']} 顆")
         return _handled(
             f"[陀螺清單] 仍在等待後續分頁"
+            f"（目前 {result['total_count']}/{result['declared_count']} 顆）"
+        )
+
+    if pending["kind"] == "bindings":
+        result = inventory_parsers.parse_bindings(merged)
+        if result["is_complete"]:
+            _clear_pending(account_id)
+            return _finish_bindings(result, base_dir, account_id)
+        return _handled(
+            f"[綁定一覽] 仍在等待後續分則"
             f"（目前 {result['total_count']}/{result['declared_count']} 顆）"
         )
 
