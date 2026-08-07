@@ -1,30 +1,13 @@
-"""
-main.py —— BOT 核心 / 協調器
-
-職責分工：
-  telegram_client.py    唯一的連線來源，monitor 跟 executor 共用
-  monitor.py             只負責擷取 Telegram 訊息、存成 raw log（純接收）
-  executor.py            只負責送出指令、記錄動作 log（純輸出，含連續送出）
-  scheduler.py            /sched 指令解析 + 排程執行/管理（延後、重複、取消）
-  parser.py               只負責分析一筆 record，回傳結構化的判斷結果
-  xxx_strategy.py         各自「事件」的判斷邏輯（世界王／衛星培育／資料同步…），
-                          只負責「判斷該做什麼」，不呼叫 executor、不存跨事件狀態。
-  main.py                （這支檔案）協調以上各者：
-                1. 啟動 monitor 的擷取
-                2. 每筆訊息存檔後，丟給 parser 分析
-                3. 用整理過、好讀的樣式印在畫面上
-                4. 把「決定要不要做什麼」的工作分派給對應的 strategy 模組，
-                   自己只留通用的反應規則表（reaction_rules.json）判斷
-"""
-
 import asyncio
 import json
+import re
 import time
 
 from telegram_client import client, BASE_DIR
 import monitor
 import executor
 import scheduler
+import button_lookup
 import profile_sync_strategy
 import satellite_training_strategy
 import world_boss_strategy
@@ -33,21 +16,10 @@ from log_maintenance import run_maintenance
 
 router = MessageRouter()
 
-# ── 摸摸熊戰鬥陀螺頻道（parser.ANNOUNCEMENT_CHAT_ID）的觸發規則清單 ──
-# 這個頻道除了世界王，之後還會有其他種類的重要公告需要接自動觸發。
-# 每加一種新公告觸發，照 world_boss_strategy.py 的模式寫一個新模組：
-#   - 一份 data/common/xxx_catalog.json（事件目錄，trigger_pattern 等）
-#   - 一支 src/xxx_strategy.py，提供：
-#       load_catalog(base_dir) -> dict
-#       decide_action(text, catalog) -> {"mode", "delay_seconds", "command", "chat_id", "reason"}
-# 寫好後把模組加進下面這個清單就好，dispatch_action() 裡的迴圈不用改。
 ANNOUNCEMENT_STRATEGIES = [
     world_boss_strategy,
-    # 之後新增其他公告觸發時，把新模組加在這裡
 ]
 
-# 目前登入的帳號 ID，啟動時取得一次、快取起來，用於資料庫隔離
-# （data/{帳號ID}/... 底下的資料只屬於這個帳號，換帳號登入就會自動切換資料夾）
 ACCOUNT_ID = None
 
 REACTION_RULES_FILE = BASE_DIR / "config" / "reaction_rules.json"
@@ -59,13 +31,31 @@ def load_reaction_rules():
 
 REACTION_RULES = load_reaction_rules()
 
-# 記錄每條規則上次觸發的時間，避免同一個提示訊息短時間內重複觸發、洗版送出重複指令
 _last_fired_at = {}
 
+_CLICK_POSITION_RE = re.compile(r"^row=(\d+)\s*,\s*col=(\d+)$", re.IGNORECASE)
 
-# ============================================================
-# 顯示層：把 parser 的結構化結果，整理成人看得懂的樣子
-# ============================================================
+
+async def click_button_by_text(spec, chat_id=None, reason=None):
+    """給 /sched click:xxx 用：xxx 可以是按鈕文字（模糊比對），
+    也可以寫成 'row=1,col=2' 依版面位置比對（文字太多變時比較穩定）。
+    沒指定 chat_id 時比照 executor.send_now 的行為，fallback 用預設頻道。
+    找到之後統一呼叫 executor.click_button 實際點擊。"""
+    target_chat_id = chat_id or executor.DEFAULT_COMMAND_CHAT_ID
+    pos_match = _CLICK_POSITION_RE.match(spec.strip())
+    if pos_match:
+        row, column = int(pos_match.group(1)), int(pos_match.group(2))
+        match = button_lookup.find_button_by_position(chat_id=target_chat_id, row=row, column=column)
+    else:
+        match = button_lookup.find_button(spec, chat_id=target_chat_id)
+
+    if match is None:
+        raise ValueError(f"raw log 裡找不到符合「{spec}」的按鈕")
+    return await executor.click_button(
+        match["chat_id"], match["message_id"], match["data"],
+        button_text=match["button_text"], reason=reason,
+    )
+
 
 def format_display_line(record, parsed):
     chat_name = record.get("chat_name", "<unknown>")
@@ -101,41 +91,22 @@ def format_display_line(record, parsed):
     return f"[{chat_name} #{message_id}] {source_type} | {preview}"
 
 
-# ============================================================
-# 執行層（骨架）：未來依 route 呼叫對應動作
-# ============================================================
-# 目前先留空，只做記錄跟印出「這裡未來會做什麼」，實際送出指令、
-# 呼叫外部程式的邏輯之後再逐步補上。risk_level/需要確認的動作，
-# 之後要在這裡擋下來、丟通知給你，而不是自動執行。
-
 async def dispatch_action(record, parsed):
     if parsed is None:
         return
 
     source_type = parsed.get("source_type")
 
-    # 使用者打「培育」指令：記下來，等下一則 BOT 回覆時判斷是新建還是續練。
-    # 這個判斷要在「不是 server/announcement 就 return」之前做，
-    # 因為使用者指令本身的 source_type 是 "user"。狀態本身存在
-    # satellite_training_strategy.py（跟消費端同一支檔案，見該檔說明）。
     if source_type == "user" and parsed.get("command") == "培育":
         satellite_training_strategy.mark_awaiting_reply(record.get("chat_id"))
 
-    # 目前的反應規則只針對 server/announcement 的內容做比對；
-    # 使用者自己打的指令不需要 BOT 反應（那是你自己在做的事）。
     if source_type not in ("server", "announcement"):
         return
 
     text = record.get("text") or ""
 
-    # 消費「剛打了培育指令、正在等第一則回覆」的旗標——不管這則伺服器訊息
-    # 是不是培育相關，都算是「等到了下一則回覆」，旗標就該清掉，避免卡住
-    # 一直殘留到很久之後某次不相關的培育訊息才被誤判。
     was_awaiting_training_reply = satellite_training_strategy.consume_awaiting_reply(record.get("chat_id"))
 
-    # ---- 公告頻道（世界王等）：依序問過 ANNOUNCEMENT_STRATEGIES，第一個給出
-    # 動作的模組獲勝就送出，其餘不用再問。純資訊公告（例如定期戰況播報）
-    # 全部模組都會回傳 None，自然往下 return，不會誤觸發任何指令。 ----
     if source_type == "announcement":
         for strategy in ANNOUNCEMENT_STRATEGIES:
             catalog = strategy.load_catalog(BASE_DIR)
@@ -145,21 +116,18 @@ async def dispatch_action(record, parsed):
                 return
             if action["mode"] == "scheduled":
                 job = scheduler.ScheduledJob(
-                    command_text=action["command"],
+                    steps=[action["command"]],
                     delay_seconds=action["delay_seconds"],
                     chat_id=action["chat_id"],
                     reason=action["reason"],
                 )
-                job_id = scheduler.schedule(job, executor.send_now)
+                job_id = scheduler.schedule(job, executor.send_now, click_button_by_text)
                 print(f"[公告觸發] ⏳ {action['reason']}，已排程 {job_id}"
                       f"（{action['delay_seconds']:.0f} 秒後執行，"
                       f"可用 /sched list 查看、/sched cancel {job_id} 取消）")
                 return
-        return  # 沒有任何模組判斷出動作，純資訊公告，不需要往下處理
+        return
 
-    # ---- 陀螺／衛星／背包／道具說明：四種都只是「更新自己資料庫」，
-    # 判斷跟存檔邏輯統一收在 profile_sync_strategy.py，這裡只負責把
-    # 結果印出來，命中時需要的話再呼叫 executor 送出查詢指令。 ----
     if source_type == "server":
         sync_result = profile_sync_strategy.handle_server_message(text, BASE_DIR, ACCOUNT_ID)
         if sync_result["handled"]:
@@ -170,10 +138,6 @@ async def dispatch_action(record, parsed):
                 )
             return
 
-    # ---- 世界王查詢回覆（第三道保險）：使用者手動查詢「世界王」時，
-    # 順便檢查這隻王今天打過沒、還活著嗎，需要的話補一刀。
-    # 這個觸發跟公告頻道的 ANNOUNCEMENT_STRATEGIES 是分開處理的，
-    # 因為查詢回覆出現在不同的 chat（摸熊神社），格式也不一樣。 ----
     if source_type == "server":
         wb_catalog = world_boss_strategy.load_catalog(BASE_DIR)
         wb_action = world_boss_strategy.decide_action_from_status_query(text, wb_catalog, BASE_DIR, ACCOUNT_ID)
@@ -181,14 +145,10 @@ async def dispatch_action(record, parsed):
             await executor.send_now(wb_action["command"], chat_id=wb_action["chat_id"], reason=wb_action["reason"])
             return
 
-    # ---- 群星計畫（衛星培育）：帶按鈕的訊息，交給策略層決定要點哪顆按鈕 ----
-    # 判斷邏輯全部在 satellite_training_strategy.py，這裡只負責呼叫、
-    # 把決策結果送去 executor.click_button 執行。
     buttons = record.get("buttons")
     if source_type == "server" and buttons:
         chat_id = record.get("chat_id")
 
-        # 如果這是「培育」指令送出後的第一則回覆，判斷新建還是續練，只判斷這一次。
         if was_awaiting_training_reply:
             catalog = satellite_training_strategy.load_catalog(BASE_DIR)
             session_kind = satellite_training_strategy.classify_session_start(text, catalog)
@@ -211,15 +171,25 @@ async def dispatch_action(record, parsed):
         return
 
     # ---- 一般觸發規則（reaction_rules.json）----
+    # action 欄位可以照舊寫一般文字指令（沿用原本行為，直接 send_now），
+    # 也可以寫成 "/sched ..." 語法，這樣就能用上 delay/rep/interval/alias/click: 等能力，
+    # 例如 "/sched click:強攻" 或 "/sched delay=3s alias=備戰 T0001 T0002"。
+    # watch_chat 是可選欄位：規則沒寫就跟以前一樣不限聊天室；要限定某個頻道才觸發，
+    # 在規則裡加一行 "watch_chat": "摸摸熊戰鬥陀螺" 即可。
+    chat_name = record.get("chat_name") or ""
     for rule in REACTION_RULES:
         if rule["match_pattern"] not in text:
+            continue
+
+        watch_chat = rule.get("watch_chat")
+        if watch_chat and watch_chat != chat_name:
             continue
 
         rule_id = rule["id"]
         cooldown = rule.get("cooldown_seconds", 60)
         last_fired = _last_fired_at.get(rule_id, 0)
         if time.time() - last_fired < cooldown:
-            continue  # 冷卻中，避免短時間內對同一提示重複反應
+            continue
 
         _last_fired_at[rule_id] = time.time()
 
@@ -228,22 +198,24 @@ async def dispatch_action(record, parsed):
 
         if risk_level == "safe" and rule.get("auto_execute") and action:
             print(f"[反應] 命中規則「{rule_id}」→ 自動執行：{action}")
-            await executor.send_now(action, reason=f"規則:{rule_id}")
+            if action.strip().startswith("/sched"):
+                try:
+                    parsed_action = scheduler.parse_sched(action.strip())
+                except scheduler.SchedParseError as e:
+                    print(f"[反應] ⚠️ 規則「{rule_id}」的 /sched 動作語法錯誤：{e}")
+                    continue
+                if isinstance(parsed_action, scheduler.SchedControl):
+                    print(f"[反應] ⚠️ 規則「{rule_id}」的動作不能是 list/cancel 這類管理指令：{action}")
+                    continue
+                job_id = scheduler.schedule(parsed_action, executor.send_now, click_button_by_text)
+                print(f"[反應] 已排程 {job_id}：{parsed_action.summary}")
+            else:
+                await executor.send_now(action, reason=f"規則:{rule_id}")
         else:
-            # 高風險/需要判斷的情境：只通知，不自動執行
             print(f"[反應] ⚠️ 命中規則「{rule_id}」，但風險等級為 {risk_level}，"
                   f"需要你自行確認並手動執行：{action or '(未指定動作，請自行判斷)'}")
 
 
-# ============================================================
-# 串接 monitor
-# ============================================================
-
-# ============================================================
-# 終端機手動輸入：直接在這個視窗打字送出指令
-# ============================================================
-# 跟 BOT 自動觸發的指令走同一條路徑（executor.send_now），
-# 一樣會記錄進 actions_sent.jsonl，reason 標成「手動輸入」方便之後區分。
 async def terminal_input_loop():
     loop = asyncio.get_event_loop()
     print("💬 可以直接在這裡輸入指令送出遊戲（Enter 送出，Ctrl+C 結束整個程式）")
@@ -257,7 +229,6 @@ async def terminal_input_loop():
             continue
 
         if text.startswith("/"):
-            # 開頭是 / 的一律視為系統功能指令保留字，不認得就擋下來，絕不送到遊戲。
             try:
                 parsed = scheduler.parse_sched(text)
             except scheduler.SchedParseError as e:
@@ -280,17 +251,14 @@ async def terminal_input_loop():
                     ok = scheduler.cancel(parsed.target)
                     print(f"[SCHED] 已取消 {parsed.target}" if ok else f"[SCHED] 找不到 {parsed.target}")
             else:
-                job_id = scheduler.schedule(parsed, executor.send_now)
-                print(f"[SCHED] 已排程 {job_id}：{parsed.command_text}"
+                job_id = scheduler.schedule(parsed, executor.send_now, click_button_by_text)
+                print(f"[SCHED] 已排程 {job_id}：{parsed.summary}"
                       f"（delay={parsed.delay_seconds:.0f}s, repeat={parsed.repeat}）")
         else:
             await executor.send_now(text, reason="手動輸入(終端機)")
 
 async def on_record(record):
     if record.get("sent_by_bot"):
-        # 這是我方（BOT 或你手動輸入）自己剛送出去的訊息，raw log 已經完整記錄，
-        # 但不需要再送進 parser 重新解析一次、也不需要再跑一次反應規則判斷，
-        # 避免同一個動作被處理兩次。
         return
 
     try:
@@ -313,8 +281,6 @@ async def run():
         print(f"  {name} : {chat_id}")
     print("=" * 70)
 
-    # 每次啟動先跑一次 log 維護（壓縮 7 天前的 log、刪除 90 天前的壓縮檔）
-    # 檢查的是資料夾日期,成本很低,啟動時做一次即可,不需要在執行期間反覆跑。
     run_maintenance()
     print()
 
@@ -325,7 +291,7 @@ async def run():
     global ACCOUNT_ID
     me = await client.get_me()
     ACCOUNT_ID = me.id
-    print(f"目前登入帳號 ID：{ACCOUNT_ID} ") #（資料庫將存於 data/{ACCOUNT_ID}/）資料庫保密
+    print(f"目前登入帳號 ID：{ACCOUNT_ID} ")
     print()
 
     asyncio.create_task(terminal_input_loop())
