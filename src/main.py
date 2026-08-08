@@ -1,11 +1,9 @@
 import asyncio
-import re
 
 from telegram_client import client, BASE_DIR
 import monitor
 import executor
 import scheduler
-import button_lookup
 import world_boss_strategy
 from parser import MessageRouter
 from log_maintenance import run_maintenance
@@ -16,35 +14,12 @@ router = MessageRouter()
 
 REACTION_RULES_FILE = BASE_DIR / "config" / "reaction_rules.json"
 
-_CLICK_POSITION_RE = re.compile(r"^row=(\d+)\s*,\s*col=(\d+)$", re.IGNORECASE)
-
 # 目前登入的帳號 ID，啟動時取得一次、快取起來（見 run()）。
 ACCOUNT_ID = None
 
 
 def _get_account_id():
     return ACCOUNT_ID
-
-
-async def click_button_by_text(spec, chat_id=None, reason=None):
-    """給 /sched click:xxx 用：xxx 可以是按鈕文字（模糊比對），
-    也可以寫成 'row=1,col=2' 依版面位置比對（文字太多變時比較穩定）。
-    沒指定 chat_id 時比照 executor.send_now 的行為，fallback 用預設頻道。
-    找到之後統一呼叫 executor.click_button 實際點擊。"""
-    target_chat_id = chat_id or executor.DEFAULT_COMMAND_CHAT_ID
-    pos_match = _CLICK_POSITION_RE.match(spec.strip())
-    if pos_match:
-        row, column = int(pos_match.group(1)), int(pos_match.group(2))
-        match = button_lookup.find_button_by_position(chat_id=target_chat_id, row=row, column=column)
-    else:
-        match = button_lookup.find_button(spec, chat_id=target_chat_id)
-
-    if match is None:
-        raise ValueError(f"raw log 裡找不到符合「{spec}」的按鈕")
-    return await executor.click_button(
-        match["chat_id"], match["message_id"], match["data"],
-        button_text=match["button_text"], reason=reason,
-    )
 
 
 # 公告頻道（摸摸熊戰鬥陀螺）的觸發規則清單。之後新增其他公告種類，
@@ -54,7 +29,6 @@ dispatcher = ActionDispatcher(
     rules_file=REACTION_RULES_FILE,
     account_id_getter=_get_account_id,
     announcement_strategies=[world_boss_strategy],
-    click_fn=click_button_by_text,
 )
 
 
@@ -83,7 +57,7 @@ async def terminal_input_loop():
                 print("[錯誤] /click 用法：/click 按鈕文字  或  /click row=1,col=2")
                 continue
             try:
-                await click_button_by_text(spec, reason="手動輸入(終端機)/click")
+                await executor.click_button_by_text(spec, reason="手動輸入(終端機)/click")
             except ValueError as e:
                 print(f"[錯誤] {e}")
             continue
@@ -111,7 +85,7 @@ async def terminal_input_loop():
                     ok = scheduler.cancel(parsed.target)
                     print(f"[SCHED] 已取消 {parsed.target}" if ok else f"[SCHED] 找不到 {parsed.target}")
             else:
-                job_id = scheduler.schedule(parsed, executor.send_now, click_button_by_text)
+                job_id = scheduler.schedule(parsed)
                 print(f"[SCHED] 已排程 {job_id}：{parsed.summary}"
                       f"（delay={parsed.delay_seconds:.0f}s, repeat={parsed.repeat}）")
         else:

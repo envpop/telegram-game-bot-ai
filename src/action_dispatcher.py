@@ -19,12 +19,11 @@ class ActionDispatcher:
     """
 
     def __init__(self, base_dir, rules_file, account_id_getter,
-                 announcement_strategies=None, click_fn=None):
+                 announcement_strategies=None):
         self.base_dir = base_dir
         self.account_id_getter = account_id_getter
         self.announcement_strategies = announcement_strategies or []
-        self.click_fn = click_fn
-        self.rule_engine = ReactionRuleEngine(rules_file, click_fn=click_fn)
+        self.rule_engine = ReactionRuleEngine(rules_file)
         # 使用者剛打「培育」後，等待 BOT 第一則回覆；key 是 chat_id。
         self._awaiting_training_reply = {}
 
@@ -79,7 +78,7 @@ class ActionDispatcher:
                     chat_id=action["chat_id"],
                     reason=action["reason"],
                 )
-                job_id = scheduler.schedule(job, executor.send_now, self.click_fn)
+                job_id = scheduler.schedule(job)
                 print(f"[公告觸發] ⏳ {action['reason']}，已排程 {job_id}"
                       f"（{action['delay_seconds']:.0f} 秒後執行，"
                       f"可用 /sched list 查看、/sched cancel {job_id} 取消）")

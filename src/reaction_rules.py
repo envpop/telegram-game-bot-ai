@@ -3,6 +3,8 @@
 action 欄位可以照舊寫一般文字指令（沿用原本行為，直接 send_now），
 也可以寫成 "/sched ..." 語法，這樣就能用上 delay/rep/interval/alias/click: 等能力，
 例如 "/sched click:強攻" 或 "/sched delay=3s alias=備戰 T0001 T0002"。
+click: 步驟怎麼找到按鈕、怎麼點，交給 scheduler 內部預設呼叫的
+executor.click_button_by_text 處理，這裡不用管。
 
 watch_chat 是規則的可選欄位：規則沒寫就跟以前一樣不限聊天室；
 要限定某個頻道才觸發，規則裡加一行 "watch_chat": "摸摸熊戰鬥陀螺" 即可。
@@ -18,12 +20,10 @@ import scheduler
 class ReactionRuleEngine:
     """套用 reaction_rules.json 的安全自動回應規則。"""
 
-    def __init__(self, rules_file, click_fn=None):
+    def __init__(self, rules_file):
         self.rules_file = rules_file
         self.rules = self.load_rules()
         self._last_fired_at = {}
-        # 給規則裡 /sched click: 步驟用；不給的話，規則裡不能寫 click:（會在執行時報錯）。
-        self.click_fn = click_fn
 
     def load_rules(self):
         with open(self.rules_file, "r", encoding="utf-8") as f:
@@ -77,5 +77,5 @@ class ReactionRuleEngine:
             print(f"[反應] ⚠️ 規則「{rule_id}」的動作不能是 list/cancel 這類管理指令：{action}")
             return
 
-        job_id = scheduler.schedule(parsed_action, executor.send_now, self.click_fn)
+        job_id = scheduler.schedule(parsed_action)
         print(f"[反應] 已排程 {job_id}：{parsed_action.summary}")

@@ -1,7 +1,8 @@
 """
 scheduler.py
 負責解析 /sched 前綴指令，並控制延後執行 / 連續重複執行 / 管理進行中的排程。
-不理解遊戲指令本身的語意，執行動作一律轉呼叫既有的 executor.send_now。
+不理解遊戲指令本身的語意，執行動作預設呼叫 executor.send_now / executor.click_button_by_text；
+呼叫端不用自己組轉接函式再傳進來，除非測試或有特殊需求才需要覆蓋。
 """
 
 import asyncio
@@ -13,6 +14,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Tuple, Callable, Awaitable, Union
 
 import aliases
+import executor
 
 _SCHED_PREFIX = "/sched"
 _DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(s|m|h)?$")
@@ -20,7 +22,7 @@ _DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(s|m|h)?$")
 # 連續重複時的最低間隔（安全下限，就算 interval 打得再小也不會低於這個值）。
 MIN_INTERVAL_SECONDS = 0.1
 # repeat > 1 但沒指定 interval 時使用的預設間隔（跟上面的下限是兩件事，各自可調）。
-DEFAULT_INTERVAL_SECONDS = 1.5
+DEFAULT_INTERVAL_SECONDS = 2.0
 
 SCHED_USAGE = (
     "/sched 用法：\n"
@@ -304,8 +306,12 @@ async def _run_job(job: ScheduledJob, send_fn: SendFn, click_fn: Optional[ClickF
         _active_jobs.pop(job.job_id, None)
 
 
-def schedule(job: ScheduledJob, send_fn: SendFn, click_fn: Optional[ClickFn] = None) -> str:
-    """建立排程任務並回傳 job_id，不會阻塞呼叫端。click_fn 沒給的話，排程裡不能有 click: 步驟。"""
+def schedule(job: ScheduledJob, send_fn: Optional[SendFn] = None, click_fn: Optional[ClickFn] = None) -> str:
+    """建立排程任務並回傳 job_id，不會阻塞呼叫端。
+    send_fn/click_fn 不給的話，預設用 executor.send_now / executor.click_button_by_text，
+    只有測試或需要換掉實際送出方式時才需要自己傳。"""
+    send_fn = send_fn or executor.send_now
+    click_fn = click_fn or executor.click_button_by_text
     task = asyncio.create_task(_run_job(job, send_fn, click_fn))
     _active_jobs[job.job_id] = (job, task)
     return job.job_id
