@@ -69,3 +69,54 @@ def find_button(text_match: str, chat_id: Optional[int] = None,
                 }
 
     return None
+
+
+def find_button_by_position(chat_id: int, row: int, column: int,
+                             message_id: Optional[int] = None,
+                             log_path: Optional[Path] = None) -> Optional[Dict]:
+    """
+    依「第幾列第幾欄」找按鈕，不看文字內容。適合版面配置固定、
+    但文字內容變動太大不好用關鍵字比對的情境（例如永遠點第一個選項）。
+
+    - chat_id 必填：同一組 row/column 在不同聊天室的訊息裡意義不一樣，
+      不限定聊天室會找錯訊息。
+    - message_id 不給的話，找該聊天室「最新一則帶按鈕的訊息」；
+      找到之後只看這一則，不會因為這則沒有該位置的按鈕就往更舊的訊息找
+      （因為最新那則才代表目前畫面上實際看到的按鈕）。
+    """
+    path = log_path or _today_log_path()
+    if not path.exists():
+        return None
+
+    with path.open("r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        if record.get("chat_id") != chat_id:
+            continue
+        if message_id is not None and record.get("message_id") != message_id:
+            continue
+
+        buttons = record.get("buttons") or []
+        if not buttons:
+            continue  # 這則沒有按鈕，繼續往更舊的找符合聊天室條件的訊息
+
+        for button in buttons:
+            if button.get("row") == row and button.get("column") == column:
+                return {
+                    "chat_id": record.get("chat_id"),
+                    "message_id": record.get("message_id"),
+                    "data": button.get("data"),
+                    "button_text": button.get("text"),
+                }
+        return None  # 找到了目標訊息，但這個位置沒有按鈕，視為找不到，不再往更舊的找
+
+    return None

@@ -20,7 +20,7 @@ _DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(s|m|h)?$")
 # 連續重複時的最低間隔（安全下限，就算 interval 打得再小也不會低於這個值）。
 MIN_INTERVAL_SECONDS = 0.1
 # repeat > 1 但沒指定 interval 時使用的預設間隔（跟上面的下限是兩件事，各自可調）。
-DEFAULT_INTERVAL_SECONDS = 2.0
+DEFAULT_INTERVAL_SECONDS = 1.5
 
 SCHED_USAGE = (
     "/sched 用法：\n"
@@ -33,6 +33,8 @@ SCHED_USAGE = (
     "  /sched int=2s click:確定;討伐;click:再抽一次 → 文字指令跟按鈕點擊可混用\n"
     "  /sched alias=備戰 T0001 T0002           → 展開設定好的別名，代入參數依序執行\n"
     "  /sched delay=5m alias=備戰 T0001 T0002  → alias 一樣可以疊加 delay/rep/int\n"
+    "  （alias 若用 {\"once\":[...], \"repeat\":[...]} 格式定義，once 只執行一次，\n"
+    "   　rep= 只會重複 repeat 那組，適合「設定一次、按鈕連點 N 次」的情境）\n"
     "  （repeat 可簡寫 rep，interval 可簡寫 int；用分號 ; 分隔多個指令可依序執行；\n"
     "   　多指令、rep>1 或使用 alias 沒給 int 時會套用預設間隔）\n"
     "  /sched aliases                          → 列出目前可用的 alias 名稱\n"
@@ -88,9 +90,10 @@ def _seconds_until(hhmm: str) -> float:
 
 @dataclass
 class ScheduledJob:
-    steps: list  # List[str]，依序執行的指令內容；用分號分隔多指令時會有多個元素
+    steps: list  # List[str]，會被 repeat 重複執行的指令內容
+    once_steps: list = field(default_factory=list)  # List[str]，只執行一次，不受 repeat 影響
     delay_seconds: float = 0.0
-    repeat: int = 1  # 整組 steps 要重複跑幾輪
+    repeat: int = 1  # steps 這組要重複跑幾輪；once_steps 永遠只跑一次
     interval: Tuple[float, float] = (0.0, 0.0)
     chat_id: Optional[int] = None
     reason: Optional[str] = None
@@ -99,7 +102,13 @@ class ScheduledJob:
     @property
     def summary(self) -> str:
         """給 print/log 用的簡短顯示字串。"""
-        return self.steps[0] if len(self.steps) == 1 else " ; ".join(self.steps)
+        steps_part = self.steps[0] if len(self.steps) == 1 else " ; ".join(self.steps)
+        if not self.once_steps:
+            return steps_part
+        once_part = " ; ".join(self.once_steps)
+        if self.repeat > 1:
+            return f"{once_part} → (重複{self.repeat}次) {steps_part}"
+        return f"{once_part} ; {steps_part}"
 
 
 @dataclass
@@ -186,11 +195,12 @@ def parse_sched(text: str) -> Optional[Union[ScheduledJob, SchedControl]]:
         consumed += 1
 
     remaining = tokens[consumed:]
+    once_steps: list = []
 
     if alias_name is not None:
         # alias=名稱 之後剩下的 tokens 全部當成該 alias 的參數，依序代入 {1} {2} ...
         try:
-            steps = aliases.resolve_alias(alias_name, remaining)
+            once_steps, steps = aliases.resolve_alias(alias_name, remaining)
         except aliases.AliasError as e:
             raise SchedParseError(str(e))
     else:
@@ -205,9 +215,9 @@ def parse_sched(text: str) -> Optional[Union[ScheduledJob, SchedControl]]:
     if at_time:
         delay_seconds = _seconds_until(at_time)
 
-    # 總執行次數 = 這組 steps 的長度 × 重複輪數。只要總次數超過 1，
-    # 步驟之間、輪次之間就都需要間隔（不管是因為 steps 有多個，還是 repeat > 1）。
-    total_runs = len(steps) * repeat
+    # 總執行次數 = once_steps（固定跑 1 次）+ steps 的長度 × 重複輪數。
+    # 只要總次數超過 1，步驟之間、輪次之間就都需要間隔。
+    total_runs = len(once_steps) + len(steps) * repeat
     if total_runs > 1:
         if interval == (0.0, 0.0):
             interval = (DEFAULT_INTERVAL_SECONDS, DEFAULT_INTERVAL_SECONDS)
@@ -221,6 +231,7 @@ def parse_sched(text: str) -> Optional[Union[ScheduledJob, SchedControl]]:
 
     return ScheduledJob(
         steps=steps,
+        once_steps=once_steps,
         delay_seconds=delay_seconds,
         repeat=repeat,
         interval=interval,
@@ -253,25 +264,39 @@ async def _run_job(job: ScheduledJob, send_fn: SendFn, click_fn: Optional[ClickF
             print(f"[SCHED] {job.job_id} 將於 {job.delay_seconds:.0f} 秒後開始執行：{job.summary}")
             await asyncio.sleep(job.delay_seconds)
 
-        total = len(job.steps) * job.repeat
+        total = len(job.once_steps) + len(job.steps) * job.repeat
         i = 0
+
+        async def _execute(step: str) -> bool:
+            """回傳 True 表示成功，False 表示失敗（呼叫端要中止剩餘步驟）。"""
+            nonlocal i
+            reason = job.reason or f"排程({job.job_id}) {i + 1}/{total}"
+            try:
+                await _run_step(step, job, reason, send_fn, click_fn)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # 某一步失敗（例如按鈕找不到）就停下來，不要盲目繼續跑剩下的步驟，
+                # 因為後續步驟很可能是建立在這一步成功的前提上。
+                print(f"[SCHED] {job.job_id} 執行「{step}」時發生錯誤：{e}，已中止剩餘步驟")
+                return False
+            i += 1
+            if i < total:
+                lo, hi = job.interval
+                wait = random.uniform(lo, hi) if hi > lo else lo
+                await asyncio.sleep(wait)
+            return True
+
+        # 設定步驟：只跑一次，不受 repeat 影響。
+        for step in job.once_steps:
+            if not await _execute(step):
+                return
+
+        # 重複步驟：跑 repeat 輪。
         for r in range(job.repeat):
             for step in job.steps:
-                reason = job.reason or f"排程({job.job_id}) {i + 1}/{total}"
-                try:
-                    await _run_step(step, job, reason, send_fn, click_fn)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    # 某一步失敗（例如按鈕找不到）就停下來，不要盲目繼續跑剩下的步驟，
-                    # 因為後續步驟很可能是建立在這一步成功的前提上。
-                    print(f"[SCHED] {job.job_id} 執行「{step}」時發生錯誤：{e}，已中止剩餘步驟")
+                if not await _execute(step):
                     return
-                i += 1
-                if i < total:
-                    lo, hi = job.interval
-                    wait = random.uniform(lo, hi) if hi > lo else lo
-                    await asyncio.sleep(wait)
     except asyncio.CancelledError:
         print(f"[SCHED] {job.job_id} 已被取消")
         raise
