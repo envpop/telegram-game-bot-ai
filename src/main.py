@@ -107,7 +107,9 @@ async def on_record(record):
 
 async def run():
     monitor.ON_RECORD_CALLBACK = on_record
-
+    # main.py 自己會透過 display_formatter 顯示每一則訊息，
+    # 關掉 monitor.py 自帶的輸出，避免同一則訊息印兩次
+    monitor.PRINT_ENABLED = False
     print("=" * 70)
     print("BOT 核心啟動")
     print(f"監看的 Chat：")
