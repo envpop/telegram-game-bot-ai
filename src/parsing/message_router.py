@@ -36,9 +36,11 @@ class MessageRouter:
         self.announcement_parser = AnnouncementFlowParser()
 
     def _base_result(self, record, classification):
+        raw_text = record.get("text") or ""
         return {
-            "raw_text": record.get("text") or "",
-            "message_id": record.get("message_id"),
+            "raw_text": raw_text,
+            "display_text": raw_text,  # 預設=原文；ServerResponseParser 對到已知 shape 時會覆寫
+             "message_id": record.get("message_id"),
             "chat_id": record.get("chat_id"),
             "sender_id": record.get("sender_id"),
             "event_type": record.get("event_type"),

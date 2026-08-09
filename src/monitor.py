@@ -58,6 +58,15 @@ ARGS = _DefaultArgs()
 # monitor.py 本身不 import parser 或 executor，維持單一職責（純接收）。
 ON_RECORD_CALLBACK = None
 
+# monitor.py 獨立執行（python monitor.py）時，靠自己印出 watch/完整區塊來看畫面。
+# 但被 main.py 這類外部程式 import、接上 ON_RECORD_CALLBACK 之後，顯示責任通常
+# 已經交給外部程式自己的 display 邏輯（例如 display_formatter.py），這時應該把
+# 這裡關掉，避免同一則訊息被印兩次。外部程式設定 ON_RECORD_CALLBACK 的同時，
+# 記得把這個也設成 False：
+#     monitor.ON_RECORD_CALLBACK = on_record
+#     monitor.PRINT_ENABLED = False
+PRINT_ENABLED = True
+
 # ============================================================
 # 時間與路徑
 # ============================================================
@@ -285,26 +294,27 @@ async def process_message(message, event_type):
         except Exception as e:
             print(f"[WARN] 外部 callback 執行失敗（不影響 monitor 本身）：chat={chat_id} msg={message.id} 錯誤：{e}")
 
-    if ARGS.watch:
-        print_watch_line(record)
-    else:
-        print()
-        print("=" * 70)
-        label = {
-            "new": "NEW MESSAGE",
-            "edited": "MESSAGE EDITED",
-        }.get(event_type, event_type.upper())
+    if PRINT_ENABLED:
+        if ARGS.watch:
+            print_watch_line(record)
+        else:
+            print()
+            print("=" * 70)
+            label = {
+                "new": "NEW MESSAGE",
+                "edited": "MESSAGE EDITED",
+            }.get(event_type, event_type.upper())
 
-        print(label)
-        print("-" * 70)
-        print(f"{MONITORED_CHATS.get(chat_id)} #{message.id}")
-        print("訊息時間：" + (message.date.astimezone(LOCAL_TZ).isoformat(timespec="seconds") if message.date else "<未知>"))
-        print("記錄時間：" + now_local())
-        print("文字：" + (text if text else "<無文字>"))
-        print("按鈕：" + (f"{len(buttons)} 個" if buttons else "無"))
-        print("媒體：" + (str(media_info) if media_info else "無"))
-        print("圖片：" + (image_path if image_path else "無"))
-        print("=" * 70)
+            print(label)
+            print("-" * 70)
+            print(f"{MONITORED_CHATS.get(chat_id)} #{message.id}")
+            print("訊息時間：" + (message.date.astimezone(LOCAL_TZ).isoformat(timespec="seconds") if message.date else "<未知>"))
+            print("記錄時間：" + now_local())
+            print("文字：" + (text if text else "<無文字>"))
+            print("按鈕：" + (f"{len(buttons)} 個" if buttons else "無"))
+            print("媒體：" + (str(media_info) if media_info else "無"))
+            print("圖片：" + (image_path if image_path else "無"))
+            print("=" * 70)
 
 # ============================================================
 # 事件
