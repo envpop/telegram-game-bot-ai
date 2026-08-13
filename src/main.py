@@ -9,6 +9,10 @@ from parser import MessageRouter
 from log_maintenance import run_maintenance
 from display_formatter import format_display_line
 from action_dispatcher import ActionDispatcher
+from strategy_pipeline import StrategyPipeline
+from strategies.market_tracking_strategy import MarketTrackingStrategy
+from strategies.chart_correlation_strategy import ChartCorrelationStrategy
+from strategies.contract_tracking_strategy import ContractTrackingStrategy
 
 router = MessageRouter()
 
@@ -16,6 +20,17 @@ REACTION_RULES_FILE = BASE_DIR / "config" / "reaction_rules.json"
 
 # 目前登入的帳號 ID，啟動時取得一次、快取起來（見 run()）。
 ACCOUNT_ID = None
+
+# 被動記錄型 strategy 的統一入口（跟 ActionDispatcher 不同：這裡管的是
+# 「單純觀察並記錄」，不主動觸發遊戲內動作）。要等 run() 裡拿到
+# ACCOUNT_ID 之後才能建立（要知道存去 data/{帳號ID}/ 底下哪裡），
+# 所以不能像 router 一樣在檔案最上面就建立，寫法比照 ACCOUNT_ID。
+STRATEGY_PIPELINE = None
+
+# 圖片配對用的 strategy，需要非同步下載，不能塞進同步的 StrategyPipeline，
+# 獨立用一個變數持有、獨立 await 呼叫。一樣要等 run() 裡拿到 ACCOUNT_ID
+# 之後才能建立。
+CHART_CORRELATION = None
 
 
 def _get_account_id():
@@ -101,6 +116,15 @@ async def on_record(record):
         print(f"[WARN] parser 執行失敗：msg={record.get('message_id')} 錯誤：{e}")
         parsed = None
 
+    if parsed is not None and STRATEGY_PIPELINE is not None:
+        parsed = STRATEGY_PIPELINE.run(parsed, record)
+
+    if parsed is not None and CHART_CORRELATION is not None:
+        try:
+            await CHART_CORRELATION.observe(parsed, record)
+        except Exception as e:
+            print(f"[WARN] chart_correlation 執行失敗：msg={record.get('message_id')} 錯誤：{e}")
+
     print(format_display_line(record, parsed))
     await dispatcher.dispatch(record, parsed)
 
@@ -110,6 +134,7 @@ async def run():
     # main.py 自己會透過 display_formatter 顯示每一則訊息，
     # 關掉 monitor.py 自帶的輸出，避免同一則訊息印兩次
     monitor.PRINT_ENABLED = False
+
     print("=" * 70)
     print("BOT 核心啟動")
     print(f"監看的 Chat：")
@@ -129,6 +154,26 @@ async def run():
     ACCOUNT_ID = me.id
     print(f"目前登入帳號 ID：{ACCOUNT_ID} ")
     print()
+
+    # 這裡才知道 ACCOUNT_ID，才能建立需要存檔到 data/{帳號ID}/ 的 strategy。
+    # 之後新增其他被動記錄型 strategy，只要加進這個清單，這裡跟 on_record
+    # 都不用再改。
+    global STRATEGY_PIPELINE
+    market_tracking = MarketTrackingStrategy(
+        account_data_dir=BASE_DIR / "data" / str(ACCOUNT_ID),
+        common_data_dir=BASE_DIR / "data" / "common",
+        enable_pulse=False,
+    )
+    STRATEGY_PIPELINE = StrategyPipeline([market_tracking])
+
+    contract_tracking = ContractTrackingStrategy(common_data_dir=BASE_DIR / "data" / "common")
+    STRATEGY_PIPELINE = StrategyPipeline([market_tracking, contract_tracking])
+
+    global CHART_CORRELATION
+    CHART_CORRELATION = ChartCorrelationStrategy(
+        common_data_dir=BASE_DIR / "data" / "common",
+        media_dir=BASE_DIR / "data" / "common" / "chart_media",
+    )
 
     asyncio.create_task(terminal_input_loop())
     await client.run_until_disconnected()

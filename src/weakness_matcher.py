@@ -35,6 +35,28 @@ RE_TRANSITION = re.compile(
     re.S,
 )
 
+# 王名(出現公告): 👹 今日世界王【第 5 階】:深海級・幽壑（攻擊型・🟢木屬性）
+# 跟 world_boss_catalog.json 的 boss_spawn.name_pattern 是同一種格式，
+# 這裡獨立寫一份 regex 是因為 weakness_matcher 是純解析模組，不依賴 catalog 檔案；
+# 如果之後兩邊的格式分岔了，要記得一起改。
+RE_BOSS_NAME_SPAWN = re.compile(r"今日世界王【第\s*\d+\s*階】[:：]\s*([^（]+)（")
+
+# 王名(相位轉變公告): 🌗💥「深海級・幽壑」的形體崩解重組……
+# 同樣對應 world_boss_catalog.json 的 phase_transition.name_pattern。
+RE_BOSS_NAME_TRANSITION = re.compile(r"「([^」]+)」的形體崩解重組")
+
+# 相位: 🌗 相位 1/3【本體】 或 進入【崩相】(相位 2/3)——兩種訊息共用同一種寫法
+RE_PHASE = re.compile(r"相位\s*(\d+)\s*/\s*(\d+)")
+
+# 護衛存活數: 🛰️ 衛星護衛 5/5 顆還在
+# 只在出現公告裡看得到，相位轉變公告目前沒有這行，抓不到就維持 None，
+# 不代表護衛消失了——護衛清空要靠 is_guards_cleared() 另一種訊息判斷。
+RE_GUARDS_ALIVE = re.compile(r"衛星護衛\s*(\d+)\s*/\s*(\d+)\s*顆還在")
+
+# 護衛清空公告(獨立一則訊息，不含王名/弱點，例如：
+# 「🛰️💥 Gene_433721 擊碎最後一顆 護衛星・裂星!王的減傷全數消失——全服接下來 10 分鐘傷害 +15%!」)
+RE_GUARDS_CLEARED = re.compile(r"王的減傷全數消失")
+
 
 @dataclass
 class WeaknessState:
@@ -43,27 +65,65 @@ class WeaknessState:
     boss_type: Optional[str] = None      # BOSS 目前類型(轉變後才有)
     source: str = ""              # 判斷依據: "initial" 或 "transition"
 
+    boss_name: Optional[str] = None      # 王名(用來跟 world_boss_progress 的記錄 key 對齊)
+    phase: Optional[int] = None          # 目前相位，例如 1、2、3
+    phase_total: Optional[int] = None    # 「相位 X/Y」的 Y，不同王可能不同，照文字實際抓，不寫死
+    has_guards: Optional[bool] = None    # 這則訊息裡有沒有提到護衛存活數；沒提到就是 None，
+                                          # 不代表沒有護衛——呼叫端要自己保留上一次已知值，
+                                          # 只有遇到 is_guards_cleared() 才明確轉 False
+
+    # 雙屬性切換王(例如「淵影對舞」機制)的預留位置。
+    # 目前不主動解析切換規則，只有訊息裡剛好帶出目前生效中的另一屬性時才會用到，
+    # 抓不到就維持 None。之後要接 ALIAS 快速套用雙屬性打法時，從這裡擴充。
+    dual_element_mode: bool = False
+    element_alt: Optional[str] = None
+
 
 class WeaknessParser:
     """純解析,不做任何 I/O 或決策"""
 
     @staticmethod
     def parse(message: str) -> Optional[WeaknessState]:
+        guards_alive = RE_GUARDS_ALIVE.search(message)
+        has_guards = (int(guards_alive.group(1)) > 0) if guards_alive else None
+
         m = RE_TRANSITION.search(message)
         if m:
             _, boss_element, _, boss_type, new_weakness = m.groups()
+            phase_m = RE_PHASE.search(message)
+            name_m = RE_BOSS_NAME_TRANSITION.search(message)
             return WeaknessState(
                 current_element=new_weakness,
                 boss_element=boss_element,
                 boss_type=boss_type,
                 source="transition",
+                boss_name=name_m.group(1) if name_m else None,
+                phase=int(phase_m.group(1)) if phase_m else None,
+                phase_total=int(phase_m.group(2)) if phase_m else None,
+                has_guards=has_guards,
             )
 
         m = RE_INITIAL_WEAKNESS.search(message)
         if m:
-            return WeaknessState(current_element=m.group(1), source="initial")
+            phase_m = RE_PHASE.search(message)
+            name_m = RE_BOSS_NAME_SPAWN.search(message)
+            return WeaknessState(
+                current_element=m.group(1),
+                source="initial",
+                boss_name=name_m.group(1) if name_m else None,
+                phase=int(phase_m.group(1)) if phase_m else None,
+                phase_total=int(phase_m.group(2)) if phase_m else None,
+                has_guards=has_guards,
+            )
 
         return None
+
+    @staticmethod
+    def is_guards_cleared(message: str) -> bool:
+        """獨立判斷式，對應護衛清空公告(不含王名/弱點的另一種 shape)。
+        呼叫端看到 True 時，把該王記錄的 has_guards 轉成 False。
+        """
+        return bool(RE_GUARDS_CLEARED.search(message))
 
 
 class TopSelector:

@@ -83,7 +83,12 @@ def decide_action(text, catalog, base_dir, account_id):
         return _NO_ACTION
 
     event_id = event["event_id"]
-    chat_id = catalog["chat_id"]
+    # 討伐指令固定送去摸熊神社(bot 私訊)，不是送回偵測到訊息的公告頻道——
+    # 公告頻道是唯讀的，bot 沒有發言權限，送過去會直接被 Telegram 拒絕
+    # （SendMessageRequest: Chat admin privileges are required）。
+    # 偵測來源（哪個 chat 看到這則訊息）跟行動目標（指令送去哪）是兩件事，
+    # 不該用同一個 chat_id。
+    chat_id = catalog["status_query"]["chat_id"]
     command = catalog["attack_command"]
 
     if event_id == "boss_spawn":
@@ -143,6 +148,6 @@ def decide_action_from_status_query(text, catalog, base_dir, account_id):
         "mode": "now",
         "delay_seconds": None,
         "command": catalog["attack_command"],
-        "chat_id": catalog["chat_id"],  # 討伐指令一律送去公告頻道打王，不是送回查詢的頻道
+        "chat_id": query["chat_id"],  # 討伐指令固定送去摸熊神社(bot 私訊)，公告頻道沒有發言權限
         "reason": f"查詢「世界王」時發現「{name}」今天還沒打過、王還活著，補一刀",
     }

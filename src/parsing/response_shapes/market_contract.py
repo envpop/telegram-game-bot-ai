@@ -1,20 +1,14 @@
 """
 shapes/market_contract.py
 
-處理「商契」指令的回應——星環市集(投資類)第一個常用指令 shape。
+處理「商契」指令的回應——星環市集(投資類)常用指令 shape。
 
-原始格式:
-    💼 我的商契
-    ──────────────
-    🃏【錢莊】60000 份　均價 30.8 → 現價 44.72　帳面 +836510
-    ...
-    ──────────────
-    市值 66567700｜成本 54583010｜帳面 +11984690｜已實現 +63828151
-    💰 點數 10304704
-
-signature(): 判斷一段文字是不是「商契」形狀,給 dispatcher 用
+signature(): 判斷一段文字是不是「商契」形狀
 parse(): 抽成結構化資料
-format_for_display(): 組出帶漲跌標示的顯示文字
+format_for_display(): 保留原文大部分內容，只在每筆持倉行尾附加漲跌標示
+
+這個檔案保持無狀態，不碰檔案 I/O、不記得任何跨訊息的東西——
+時間序列存檔跟跨指令行情脈動，是 market_tracking_strategy.py 的責任。
 """
 import re
 
@@ -77,14 +71,17 @@ def _trend_marker(pct):
 
 
 def format_for_display(parsed):
+    """保留原文大部分內容（均價/現價/帳面都還在），只在行尾多附一段
+    漲跌標示，不是重寫整行——資訊量比原文多一點點，不是取代。"""
     lines = ["💼 我的商契", "──────────────"]
     for h in parsed["holdings"]:
         marker = _trend_marker(h["pct"])
         sign = "+" if h["pct"] >= 0 else ""
-        lines.append(
+        original = (
             f"{h['emoji']}【{h['name']}】{h['shares']} 份　"
-            f"{marker} {sign}{h['pct']}%　帳面 {h['pnl']:+}"
+            f"均價 {h['cost']} → 現價 {h['price']}　帳面 {h['pnl']:+}"
         )
+        lines.append(f"{original}　{marker} {sign}{h['pct']}%")
     lines.append("──────────────")
     s = parsed["summary"]
     if s:

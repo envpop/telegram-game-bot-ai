@@ -19,6 +19,13 @@ AUTHOR_ANNOUNCEMENT 這兩種子類型目前不套 shape 比對，維持純分�
 
 from .source_classifier import ServerSubtype
 from .response_shapes import market_contract
+from .response_shapes import market_overview
+from .response_shapes import market_quote
+from .response_shapes import trade_confirmation
+from .response_shapes import contract_overview
+from .response_shapes import contract_quote
+from .response_shapes import world_boss_status
+from .response_shapes import world_boss_battle_report
 
 _ROUTE_MAP = {
     ServerSubtype.RESPONSE: "server_response_flow",
@@ -29,6 +36,13 @@ _ROUTE_MAP = {
 # 已知的回應「形狀」，依序嘗試比對。新增一個常用指令的 parser，就在這裡加一行。
 _KNOWN_SHAPES = [
     market_contract,
+    market_overview,
+    market_quote,
+    trade_confirmation,
+    contract_overview,
+    contract_quote,
+    world_boss_status,
+    world_boss_battle_report,
 ]
 
 

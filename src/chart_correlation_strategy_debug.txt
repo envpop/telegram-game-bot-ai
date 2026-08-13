@@ -1,0 +1,70 @@
+        print(
+            "[CHART DEBUG]",
+            "shape=", parsed.get("shape") if parsed else None,
+            "msg=", record.get("message_id"),
+            "chat=", record.get("chat_id"),
+            "is_image=", record.get("is_image"),
+            "media=", record.get("media"),
+            "image_path=", record.get("image_path"),
+            "pending=", self._pending,
+        )
+
+        if parsed and parsed.get("shape") == "market_quote":
+            structured = parsed.get("structured") or {}
+            name = structured.get("name")
+            if name:
+                self._pending = {
+                    "name": name,
+                    "chat_id": record.get("chat_id"),
+                    "seen_at": time.time(),
+                }
+                print(f"[CHART DEBUG] 建立 pending：{self._pending}")
+            return None
+
+        if self._pending is None:
+            print("[CHART DEBUG] 沒有 pending，忽略")
+            return None
+
+        has_image = (
+            bool((record.get("media") or {}).get("has_photo"))
+            or record.get("is_image")
+        )
+
+        print(f"[CHART DEBUG] has_image={has_image}")
+
+        if not has_image:
+            print("[CHART DEBUG] record 沒被判定為圖片")
+            return None
+
+        if record.get("chat_id") != self._pending["chat_id"]:
+            print(
+                "[CHART DEBUG] chat 不一致：",
+                record.get("chat_id"),
+                self._pending["chat_id"],
+            )
+            return None
+
+        if time.time() - self._pending["seen_at"] > CORRELATION_WINDOW_SECONDS:
+            print("[CHART DEBUG] 超過配對時間")
+            self._pending = None
+            return None
+
+        pending = self._pending
+        self._pending = None
+
+        image_path = record.get("image_path")
+
+        if not image_path:
+            print("[CHART DEBUG] 沒有 image_path，開始補抓")
+            image_path = await self._download_image(record)
+
+        if not image_path:
+            print("[CHART DEBUG] 圖片下載失敗")
+            return None
+
+        print(f"[CHART DEBUG] 圖片：{image_path}")
+
+        result = chart_worker.parse_chart_image(
+            image_path,
+            text_hint=pending["name"],
+        )

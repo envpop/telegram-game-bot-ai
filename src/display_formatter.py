@@ -1,45 +1,59 @@
 """display_formatter.py —— 將 parser 結果整理成終端機顯示文字。"""
 
 
-def _full_text_block(chat_name, message_id, tag, record):
-    """還沒做 shape 時的 fallback：印完整原文，不截斷成單行，
-    盡量對齊 monitor.py 原本印的資訊量（文字/按鈕文字/媒體/圖片），
-    避免關掉 monitor 自己的輸出後，資訊反而變少。"""
-    text = record.get("text") or "<無文字>"
+def _has_image(record):
+    """判斷這則訊息是否有圖片。不用 record['is_image']，因為那個欄位在
+    monitor.py 的 DOWNLOAD_MEDIA_ENABLED 關閉時永遠是 False，不可靠；
+    改看 media 裡的 has_photo，這個欄位不受下載開關影響。"""
+    media = record.get("media") or {}
+    if media.get("has_photo"):
+        return True
+    return bool(record.get("is_image"))
+
+
+def _trailer(record):
+    """按鈕/圖片的共用附加資訊：按鈕顯示文字選項，圖片只在有圖時提一句，
+    不下載、不顯示路徑（圖片分析是之後才考慮的事，現在不需要）。"""
+    lines = []
     buttons = record.get("buttons") or []
-    media = record.get("media")
-    image_path = record.get("image_path")
-
-    lines = [f"[{chat_name} #{message_id}] {tag}", text]
-
     if buttons:
-        lines.append(f"按鈕：{len(buttons)} 個")
         for b in buttons:
             row = b.get("row")
             col = b.get("column")
             btn_text = b.get("text") or "<無文字按鈕>"
-            lines.append(f"  [{row},{col}] {btn_text}")
-
-    if image_path:
-        lines.append(f"圖片：{image_path}")
-    elif media:
-        lines.append(f"媒體：{media}")
-
-    return "\n".join(lines)
+            lines.append(f"  🔘 [{row},{col}] {btn_text}")
+    if _has_image(record):
+        lines.append("  🖼️ 有圖片")
+    return lines
 
 
 def format_display_line(record, parsed):
-    """把一筆 raw record 與 parser 結果格式化成人類可讀的顯示文字。"""
+    """把一筆 raw record 與 parser 結果格式化成人類可讀的顯示文字。
+
+    有 shape 判斷的，顯示 parser 解讀過的結果。沒有 shape 判斷的，
+    顯示完整原文（不截斷）並標「尚未分類」——因為 monitor.py 在
+    main.py 底下是關掉輸出的（monitor.PRINT_ENABLED = False），這裡
+    是當下唯一看得到內容的地方，截斷成短短一段會讓人沒有足夠資訊判斷，
+    等於瞎眼。截斷過的 preview 只留給「未辨識指令」「parser 執行失敗」
+    這種本來就只是定位用、不需要完整內容的情境。
+
+    parsed['market_pulse']：如果 strategy_pipeline 跑過
+    market_tracking_strategy 並且有東西可以附加，會出現在這裡，直接讀
+    就好，不用知道是哪個 strategy 產生的。
+    """
     chat_name = record.get("chat_name", "<unknown>")
     message_id = record.get("message_id", "")
-    text = (record.get("text") or "").replace("\n", " ").strip()
-    preview = text if len(text) <= 60 else text[:60] + "..."
-    if not preview:
-        preview = "<無文字>"
+    raw_text = record.get("text") or ""
+    single_line_preview = raw_text.replace("\n", " ").strip()
+    if len(single_line_preview) > 60:
+        single_line_preview = single_line_preview[:60] + "..."
+    if not single_line_preview:
+        single_line_preview = "<無文字>"
 
     if parsed is None:
-        return f"[{chat_name} #{message_id}] ⚠️ PARSER 執行失敗 | {preview}"
+        return f"[{chat_name} #{message_id}] ⚠️ PARSER 執行失敗 | {single_line_preview}"
 
+    market_pulse = parsed.get("market_pulse")
     source_type = parsed.get("source_type")
 
     if source_type == "user":
@@ -51,19 +65,30 @@ def format_display_line(record, parsed):
             shape_flag = "" if valid_shape else " ⚠️參數數量不符"
             return (f"[{chat_name} #{message_id}] 👤指令 | {command} {arg_str}"
                     f" → route={parsed.get('route')}{shape_flag}")
-        return f"[{chat_name} #{message_id}] 👤指令 | ⚠️未辨識：{preview} → review_queue"
+        return f"[{chat_name} #{message_id}] 👤指令 | ⚠️未辨識：{single_line_preview} → review_queue"
 
     if source_type == "server":
         shape = parsed.get("shape")
         if parsed.get("parsed") and shape:
-            # 已知 shape：parser 給的是排版過的多行文字，不要再截斷成單行 preview
-            display_text = parsed.get("display_text") or preview
+            # 已知 shape：parser 給的是排版過的多行文字，直接呈現判斷結果
+            display_text = parsed.get("display_text") or raw_text or "<無文字>"
             header = f"[{chat_name} #{message_id}] 🤖伺服器回應（{shape}）"
-            return f"{header}\n{display_text}"
-        # 還沒做 shape 的指令：印完整原文，不要截斷
-        return _full_text_block(chat_name, message_id, "🤖伺服器回應", record)
+        else:
+            # 沒有對應的 shape：顯示完整原文，不截斷，只標「尚未分類」
+            display_text = raw_text if raw_text else "<無文字>"
+            header = f"[{chat_name} #{message_id}] 🤖伺服器回應（尚未分類）"
+        base = f"{header}\n{display_text}"
+        trailer = _trailer(record)
+        if market_pulse:
+            trailer = trailer + [f"  {market_pulse}"]
+        return base if not trailer else base + "\n" + "\n".join(trailer)
 
     if source_type == "announcement":
-        return _full_text_block(chat_name, message_id, "📢公告", record)
+        display_text = raw_text if raw_text else "<無文字>"
+        base = f"[{chat_name} #{message_id}] 📢公告（尚未分類）\n{display_text}"
+        trailer = _trailer(record)
+        if market_pulse:
+            trailer = trailer + [f"  {market_pulse}"]
+        return base if not trailer else base + "\n" + "\n".join(trailer)
 
-    return f"[{chat_name} #{message_id}] {source_type} | {preview}"
+    return f"[{chat_name} #{message_id}] {source_type} | {single_line_preview}"

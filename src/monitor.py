@@ -28,11 +28,16 @@ DOWNLOAD_TIMEOUT_SECONDS = 30
 # 內容跟同組的文字訊息重複,目前沒有圖片辨識需求,關閉可省下大量硬碟空間。
 # 關閉後 record 裡的 is_image / media 欄位仍會照常記錄「這裡曾經有一張圖」，
 # 只是不下載實體檔案；未來如果發現例外情況(只有圖沒有文字)，把這裡打開即可。
+#
+# 需要特定圖片(例如行情走勢圖)時，不在這裡開全域開關——訊息跟它的媒體
+# 參照在 Telegram 伺服器上不會消失，之後要用哪張圖，直接拿 chat_id +
+# message_id 事後重新下載即可，不需要在這裡預先攔截。見
+# strategies/chart_correlation_strategy.py。
 DOWNLOAD_MEDIA_ENABLED = False
 
 # 「最近訊息」小檔案：固定只保留最近 N 筆，方便快速 debug，
 # 不用每次都打開一整天份的完整 log。跟完整 log 分開存放，永遠很小。
-DEBUG_TAIL_SIZE = 300
+DEBUG_TAIL_SIZE = 500
 
 # ============================================================
 # CLI
