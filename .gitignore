@@ -26,9 +26,10 @@ logs/
 
 # Ignore everything under data/ & media
 data/*
-data/common/chart_media/
 
 # But keep the shared common data
 !data/common/
 !data/common/**
 
+# Ignore media/
+data/common/chart_media/
