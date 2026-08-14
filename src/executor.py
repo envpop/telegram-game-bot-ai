@@ -18,10 +18,30 @@ executor.py —— 輸出層
 
 button_lookup.py 只讀 monitor 寫出的 log 檔案，不 import monitor 也不 import
 executor，這裡 import button_lookup 不會造成循環依賴。
+
+=== 2026-08-14 新增：點擊前延遲 ===
+click_button() 送出點擊前，會先等待一段隨機秒數，模擬真人「看到選項→
+反應→按下去」的間隔，不要瞬發、也不要每次間隔完全一樣（固定值反而更
+像機器人）。這是所有三套自動系統（主塔戰鬥、世界王、群星計畫）共用的
+同一個 click_button()，所以在這裡加一次，三套都會生效，不用各自處理。
+
+延遲設定支援兩種模式，存在 data/common/click_timing.json（跨程式重啟
+保留）：
+  - 固定值：min == max，每次都是同一個秒數
+  - 範圍值：min < max，每次點擊前用 random.uniform(min, max) 抽一個秒數
+
+用 get_click_delay_seconds() 取得「這一次」要等待的秒數（每次呼叫都可能
+不同，因為是抽出來的），get_click_delay_range() 取得目前設定的範圍（給
+/delay 查詢顯示用），set_click_delay_range(min, max) 寫入設定。沒有強制
+下限，min 可以設成 0（=不延遲）；只要求 min >= 0 且 max >= min，交給呼叫
+端（main.py 的 /delay 指令）驗證。也可以直接在終端機用 /delay 指令調整
+（見 main.py）。這個延遲只套用在「點擊按鈕」，不影響 send_now（文字指令）
+——熊這次提的是「按鈕動作」，文字指令沒有反應時間的問題，先不動。
 """
 
 import asyncio
 import json
+import random
 import re
 from datetime import datetime, timezone, timedelta
 
@@ -32,6 +52,10 @@ import button_lookup
 
 LOG_DIR = BASE_DIR / "logs"
 LOCAL_TZ = timezone(timedelta(hours=8))
+
+_CLICK_TIMING_FILE = BASE_DIR / "data" / "common" / "click_timing.json"
+_DEFAULT_CLICK_DELAY_MIN = 1.0
+_DEFAULT_CLICK_DELAY_MAX = 1.0
 
 # 跟 monitor.py 裡的 MONITORED_CHATS 保持一致，這裡獨立定義一份，
 # 避免 executor 為了一個對照表就得 import monitor（維持兩邊互不依賴）。
@@ -67,6 +91,34 @@ def _log_action(record):
         f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
 
 
+def get_click_delay_range():
+    """回傳目前設定的 (min, max) 秒數，給 /delay 查詢顯示用。"""
+    try:
+        data = json.loads(_CLICK_TIMING_FILE.read_text(encoding="utf-8"))
+        return float(data["min"]), float(data["max"])
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return _DEFAULT_CLICK_DELAY_MIN, _DEFAULT_CLICK_DELAY_MAX
+
+
+def get_click_delay_seconds() -> float:
+    """回傳「這一次」點擊前要等待的秒數。min==max 時固定回傳同一個值，
+    min<max 時每次呼叫都用 random.uniform(min, max) 重新抽一個。
+    """
+    lo, hi = get_click_delay_range()
+    if lo >= hi:
+        return lo
+    return random.uniform(lo, hi)
+
+
+def set_click_delay_range(min_seconds: float, max_seconds: float) -> None:
+    """min_seconds 可以是 0（=不延遲）；沒有強制下限。max_seconds 必須 >= min_seconds，
+    呼叫端（/delay 指令）負責驗證，這裡不重複檢查。"""
+    _CLICK_TIMING_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _CLICK_TIMING_FILE.write_text(
+        json.dumps({"min": min_seconds, "max": max_seconds}, ensure_ascii=False), encoding="utf-8"
+    )
+
+
 async def send_now(text, chat_id=None, reason=None):
     """立刻送出一筆指令，並記錄下來。"""
     target_chat_id = chat_id or DEFAULT_COMMAND_CHAT_ID
@@ -97,7 +149,14 @@ async def click_button(chat_id, message_id, data, button_text=None, reason=None)
 
     需要「用文字或位置找按鈕」時用 click_button_by_text，不要自己拼 chat_id/
     message_id/data，那些細節交給 button_lookup 處理。
+
+    送出前會先 sleep get_click_delay_seconds() 秒，模擬真人反應時間，
+    三套自動系統都共用這個函式，不用各自處理延遲。
     """
+    delay = get_click_delay_seconds()
+    if delay > 0:
+        await asyncio.sleep(delay)
+
     data_bytes = data.encode("utf-8")
 
     result = await client(GetBotCallbackAnswerRequest(

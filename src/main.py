@@ -60,6 +60,54 @@ async def terminal_input_loop():
         if not text:
             continue
 
+        if text.startswith("/delay"):
+            # 按鈕點擊前的反應延遲，套用在所有三套自動系統共用的
+            # executor.click_button()，不用各自處理。跟 /click、/sched、
+            # /auto 一樣是終端機輸入的即時指令。
+            # 用法：
+            #   /delay              查詢目前設定
+            #   /delay 1.5          設成固定 1.5 秒
+            #   /delay 0.8-1.5      設成範圍 0.8~1.5 秒（每次點擊隨機抽一個）
+            #   /delay 0            設成 0（不延遲，沒有強制下限）
+            _DELAY_USAGE = ("[錯誤] /delay 用法：\n"
+                             "  /delay              查詢目前設定\n"
+                             "  /delay 1.5          設成固定 1.5 秒\n"
+                             "  /delay 0.8-1.5      設成範圍 0.8~1.5 秒（每次隨機）")
+            parts = text.split(maxsplit=1)
+            if len(parts) == 1:
+                lo, hi = executor.get_click_delay_range()
+                if lo >= hi:
+                    print(f"[延遲] 按鈕點擊前的延遲目前：固定 {lo} 秒")
+                else:
+                    print(f"[延遲] 按鈕點擊前的延遲目前：範圍 {lo}~{hi} 秒（每次隨機）")
+            else:
+                spec = parts[1].strip()
+                if "-" in spec:
+                    bounds = spec.split("-", 1)
+                    try:
+                        lo, hi = float(bounds[0]), float(bounds[1])
+                    except ValueError:
+                        print(_DELAY_USAGE)
+                        continue
+                else:
+                    try:
+                        lo = hi = float(spec)
+                    except ValueError:
+                        print(_DELAY_USAGE)
+                        continue
+
+                if lo < 0:
+                    print("[錯誤] 延遲秒數不能是負數")
+                elif hi < lo:
+                    print("[錯誤] 範圍上限不能小於下限")
+                else:
+                    executor.set_click_delay_range(lo, hi)
+                    if lo == hi:
+                        print(f"[延遲] ✅ 按鈕點擊前的延遲已設定為固定 {lo} 秒")
+                    else:
+                        print(f"[延遲] ✅ 按鈕點擊前的延遲已設定為範圍 {lo}~{hi} 秒（每次隨機）")
+            continue
+
         if text.startswith("/auto"):
             # 統一開關：主塔戰鬥／世界王／群星計畫，三套會自動送出動作的
             # 系統共用同一個指令。跟 /click、/sched 一樣是終端機輸入的
