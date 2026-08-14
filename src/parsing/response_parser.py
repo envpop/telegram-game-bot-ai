@@ -13,8 +13,15 @@ RESPONSE 子類型底下，內容結構化採「shape 比對」的做法：respo
     format_for_display(parsed) -> str 組出給 display 用的文字
 
 只涵蓋你們談過要做的「高頻指令」（戰鬥類、投資類），沒對到任何已知
-shape 的一律 fallback 回傳原文，不影響尚未支援的指令。EDIT / 
-AUTHOR_ANNOUNCEMENT 這兩種子類型目前不套 shape 比對，維持純分流。
+shape 的一律 fallback 回傳原文，不影響尚未支援的指令。
+
+RESPONSE（新訊息）跟 EDIT（原地編輯既有訊息）都會套 shape 比對——
+2026-08-14 發現主塔進階戰鬥每一回合是編輯同一則訊息推進（event_type
+== "edited"），不是每輪發新訊息，所以 EDIT 不能再排除在 shape 比對外，
+否則戰鬥訊息永遠進不到 main_tower_battle_prompt.py。EDIT 底下沒對到
+任何已知 shape 的（例如單純清按鈕、推進劇情的編輯）行為不變，一樣
+fallback 顯示原文。AUTHOR_ANNOUNCEMENT 這個子類型維持不套 shape 比對，
+純分流。
 """
 
 from .source_classifier import ServerSubtype
@@ -33,6 +40,11 @@ _ROUTE_MAP = {
     ServerSubtype.EDIT: "server_edit_flow",
     ServerSubtype.AUTHOR_ANNOUNCEMENT: "author_announcement_flow",
 }
+
+# 會嘗試套 shape 比對的子類型。RESPONSE 是一般新訊息；EDIT 是原地編輯
+# 既有訊息（主塔進階戰鬥每回合就是這種），兩者都可能是熱門指令的回應，
+# 都要嘗試比對。AUTHOR_ANNOUNCEMENT 不在其中，維持純分流。
+_SHAPE_MATCHABLE_SUBTYPES = (ServerSubtype.RESPONSE, ServerSubtype.EDIT)
 
 # 已知的回應「形狀」，依序嘗試比對。新增一個常用指令的 parser，就在這裡加一行。
 _KNOWN_SHAPES = [
@@ -61,7 +73,7 @@ class ServerResponseParser:
             "display_text": raw_text,  # fallback：預設就是原文，未支援的指令行為不變
         }
 
-        if source_subtype != ServerSubtype.RESPONSE:
+        if source_subtype not in _SHAPE_MATCHABLE_SUBTYPES:
             return result
 
         for shape_module in _KNOWN_SHAPES:

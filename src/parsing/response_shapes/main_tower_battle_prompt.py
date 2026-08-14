@@ -49,10 +49,12 @@ RE_GODHOOD = re.compile(
 RE_OWN_HP = re.compile(r"你\s*HP\s*(?P<own_hp>\d+)/(?P<own_hp_max>\d+)")
 RE_BOSS_HP = re.compile(r"敵\s*HP\s*(?P<boss_hp>\d+)/(?P<boss_hp_max>\d+)")
 
-# 能量/護盾行：✨ 能量 0/100　🛡️護盾 224
-RE_ENERGY_SHIELD = re.compile(
-    r"能量\s*(?P<energy>\d+)/(?P<energy_max>\d+)　🛡️護盾\s*(?P<shield>\d+)"
-)
+# 能量跟護盾故意拆成兩條獨立 regex，不綁在同一個 match 裡：護盾這個欄位
+# 不是每回合都會顯示（例如沒有護盾時整段「🛡️護盾 N」直接不出現），如果
+# 寫成同一個 pattern，護盾缺席會連能量都抓不到，能量是每回合決策都要用的
+# 關鍵數值，不能因為護盾有沒有顯示而受影響。
+RE_ENERGY = re.compile(r"能量\s*(?P<energy>\d+)/(?P<energy_max>\d+)")
+RE_SHIELD = re.compile(r"🛡️護盾\s*(?P<shield>\d+)")
 
 
 def signature(text):
@@ -64,7 +66,8 @@ def parse(text):
     godhood = RE_GODHOOD.search(text)
     own_hp = RE_OWN_HP.search(text)
     boss_hp = RE_BOSS_HP.search(text)
-    energy_shield = RE_ENERGY_SHIELD.search(text)
+    energy = RE_ENERGY.search(text)
+    shield = RE_SHIELD.search(text)
 
     effects = []
     if godhood:
@@ -84,9 +87,9 @@ def parse(text):
         "own_hp_max": int(own_hp.group("own_hp_max")) if own_hp else None,
         "boss_hp": int(boss_hp.group("boss_hp")) if boss_hp else None,
         "boss_hp_max": int(boss_hp.group("boss_hp_max")) if boss_hp else None,
-        "energy": int(energy_shield.group("energy")) if energy_shield else None,
-        "energy_max": int(energy_shield.group("energy_max")) if energy_shield else None,
-        "shield": int(energy_shield.group("shield")) if energy_shield else None,
+        "energy": int(energy.group("energy")) if energy else None,
+        "energy_max": int(energy.group("energy_max")) if energy else None,
+        "shield": int(shield.group("shield")) if shield else None,
     }
 
 
@@ -113,6 +116,7 @@ def format_for_display(parsed):
     if parsed["boss_hp"] is not None:
         lines.append(f"👹 敵 HP {parsed['boss_hp']}/{parsed['boss_hp_max']}")
     if parsed["energy"] is not None:
-        lines.append(f"✨ 能量 {parsed['energy']}/{parsed['energy_max']}　🛡️護盾 {parsed['shield']}")
+        shield_part = f"　🛡️護盾 {parsed['shield']}" if parsed["shield"] is not None else ""
+        lines.append(f"✨ 能量 {parsed['energy']}/{parsed['energy_max']}{shield_part}")
 
     return "\n".join(lines) if lines else "(主塔戰鬥狀態解析失敗)"
