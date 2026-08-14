@@ -31,5 +31,6 @@ data/*
 !data/common/
 !data/common/**
 
-# Ignore media/
+# Ignore media&DBs/
 data/common/chart_media/
+data/common/*_prices.jsonl
