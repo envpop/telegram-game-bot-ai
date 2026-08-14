@@ -40,6 +40,13 @@ from pathlib import Path
 
 import world_boss_progress
 
+# 給 action_dispatcher.py 的公告策略迴圈用：迴圈用 getattr(strategy,
+# "SYSTEM_KEY", None) 通用地查 auto_toggle 開關狀態，不用在 dispatcher
+# 裡寫死判斷「這支模組是不是世界王」。之後新增別種公告策略模組，只要
+# 也宣告一個 SYSTEM_KEY（並在 auto_toggle.SYSTEM_KEYS 補一個顯示名稱），
+# 開關機制就自動涵蓋，dispatcher 端完全不用改。
+SYSTEM_KEY = "world_boss"
+
 _CATALOG_CACHE = None
 
 

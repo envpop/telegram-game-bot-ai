@@ -1,6 +1,7 @@
 import asyncio
 
 from telegram_client import client, BASE_DIR
+import auto_toggle
 import monitor
 import executor
 import scheduler
@@ -57,6 +58,47 @@ async def terminal_input_loop():
             break
         text = text.strip()
         if not text:
+            continue
+
+        if text.startswith("/auto"):
+            # 統一開關：主塔戰鬥／世界王／群星計畫，三套會自動送出動作的
+            # 系統共用同一個指令。跟 /click、/sched 一樣是終端機輸入的
+            # 即時指令，不經過 Telegram（目前架構還沒有 Telegram 端的
+            # 遠端控制通道）。
+            # 用法：
+            #   /auto                       查看三套系統目前開關狀態
+            #   /auto <system> on|off       開啟/關閉指定系統
+            # <system> 可用簡稱：mtb / wb / sat，或完整 key：
+            #   main_tower_battle / world_boss / satellite_training
+            _AUTO_ALIASES = {
+                "mtb": "main_tower_battle",
+                "main_tower": "main_tower_battle",
+                "main_tower_battle": "main_tower_battle",
+                "wb": "world_boss",
+                "world_boss": "world_boss",
+                "sat": "satellite_training",
+                "satellite": "satellite_training",
+                "satellite_training": "satellite_training",
+            }
+            _AUTO_USAGE = ("[錯誤] /auto 用法：\n"
+                           "  /auto                    查看三套系統目前開關狀態\n"
+                           "  /auto <system> on|off    開啟/關閉指定系統\n"
+                           "  <system>：mtb（主塔戰鬥）／wb（世界王）／sat（群星計畫）")
+            parts = text.split()
+            if len(parts) == 1:
+                print("[開關狀態]\n" + auto_toggle.status_summary(BASE_DIR))
+            elif len(parts) == 3 and parts[2] in ("on", "off"):
+                system_key = _AUTO_ALIASES.get(parts[1])
+                if system_key is None:
+                    print(_AUTO_USAGE)
+                else:
+                    enabled = parts[2] == "on"
+                    auto_toggle.set_enabled(BASE_DIR, system_key, enabled)
+                    label = auto_toggle.SYSTEM_KEYS[system_key]
+                    state = "✅ 開啟" if enabled else "🔕 關閉"
+                    print(f"[開關] {label}：{state}")
+            else:
+                print(_AUTO_USAGE)
             continue
 
         if text.startswith("/click"):

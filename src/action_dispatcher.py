@@ -1,5 +1,6 @@
 """action_dispatcher.py —— 根據 parser 結果協調各自動化處理器。"""
 
+import auto_toggle
 import executor
 import main_tower_battle_strategy
 import profile_sync_strategy
@@ -70,6 +71,11 @@ class ActionDispatcher:
     # ---- 公告頻道（世界王等）----
     async def _handle_announcement(self, text):
         for strategy in self.announcement_strategies:
+            system_key = getattr(strategy, "SYSTEM_KEY", None)
+            if system_key and not auto_toggle.is_enabled(self.base_dir, system_key):
+                label = auto_toggle.SYSTEM_KEYS.get(system_key, system_key)
+                print(f"[{label}] 🔕 自動發送已關閉，略過判斷（終端機輸入 /auto 查看開關狀態）")
+                continue
             catalog = strategy.load_catalog(self.base_dir)
             action = strategy.decide_action(text, catalog, self.base_dir, self.account_id)
             if action["mode"] == "now":
@@ -103,6 +109,9 @@ class ActionDispatcher:
 
     # ---- 世界王查詢回覆（第三道保險）----
     async def _handle_world_boss_status_query(self, text):
+        if not auto_toggle.is_enabled(self.base_dir, "world_boss"):
+            return False  # 開關關閉：不送出補刀指令，但仍放行讓其他 handler 有機會處理這則訊息
+
         wb_catalog = world_boss_strategy.load_catalog(self.base_dir)
         wb_action = world_boss_strategy.decide_action_from_status_query(
             text, wb_catalog, self.base_dir, self.account_id
@@ -123,6 +132,11 @@ class ActionDispatcher:
         # 一個地方維護，這裡單純信任上游結果。
         if parsed.get("shape") != "main_tower_battle_prompt":
             return False
+
+        if not auto_toggle.is_enabled(self.base_dir, "main_tower_battle"):
+            print(f"[主塔戰鬥] 🔕 自動點擊已關閉（終端機輸入 /auto 查看開關狀態），"
+                  f"已收到訊息但不會自動點擊，請自行手動選擇")
+            return True
 
         structured = parsed.get("structured")
         action = main_tower_battle_strategy.decide_action(structured, buttons)
@@ -146,6 +160,11 @@ class ActionDispatcher:
         buttons = record.get("buttons")
         if not buttons:
             return False
+
+        if not auto_toggle.is_enabled(self.base_dir, "satellite_training"):
+            print(f"[群星計畫] 🔕 自動點擊已關閉（終端機輸入 /auto 查看開關狀態），"
+                  f"已收到訊息但不會自動點擊，請自行手動選擇")
+            return False  # 不吃掉這則訊息，維持原本「放行給 reaction_rules」的行為
 
         if was_awaiting_training_reply:
             catalog = satellite_training_strategy.load_catalog(self.base_dir)

@@ -4576,3 +4576,11 @@
 {"recorded_at": "2026-08-14T07:17:41+08:00", "name": "通天", "price": 106.46, "offset_minutes": -10, "source": "chart", "confidence": 0.85}
 {"recorded_at": "2026-08-14T07:17:41+08:00", "name": "通天", "price": 107.04, "offset_minutes": -5, "source": "chart", "confidence": 0.85}
 {"recorded_at": "2026-08-14T07:17:41+08:00", "name": "通天", "price": 107.98, "offset_minutes": 0, "source": "chart", "confidence": 0.85}
+{"recorded_at": "2026-08-14T10:55:25+08:00", "name": "錢莊", "price": 62.99}
+{"recorded_at": "2026-08-14T10:55:25+08:00", "name": "漁業", "price": 60.53}
+{"recorded_at": "2026-08-14T10:55:25+08:00", "name": "礦業", "price": 91.17}
+{"recorded_at": "2026-08-14T10:55:25+08:00", "name": "旋核", "price": 91.78}
+{"recorded_at": "2026-08-14T10:55:25+08:00", "name": "群星", "price": 81.06}
+{"recorded_at": "2026-08-14T10:55:25+08:00", "name": "熔能", "price": 75.74}
+{"recorded_at": "2026-08-14T10:55:25+08:00", "name": "摸熊", "price": 129.75}
+{"recorded_at": "2026-08-14T10:55:25+08:00", "name": "通天", "price": 114.46}
