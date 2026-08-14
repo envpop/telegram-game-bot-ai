@@ -26,6 +26,7 @@ from .response_shapes import contract_overview
 from .response_shapes import contract_quote
 from .response_shapes import world_boss_status
 from .response_shapes import world_boss_battle_report
+from .response_shapes import main_tower_battle_prompt
 
 _ROUTE_MAP = {
     ServerSubtype.RESPONSE: "server_response_flow",
@@ -43,6 +44,7 @@ _KNOWN_SHAPES = [
     contract_quote,
     world_boss_status,
     world_boss_battle_report,
+    main_tower_battle_prompt,
 ]
 
 

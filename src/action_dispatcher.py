@@ -1,6 +1,7 @@
 """action_dispatcher.py —— 根據 parser 結果協調各自動化處理器。"""
 
 import executor
+import main_tower_battle_strategy
 import profile_sync_strategy
 import satellite_training_strategy
 import scheduler
@@ -58,6 +59,9 @@ class ActionDispatcher:
         if await self._handle_world_boss_status_query(text):
             return
 
+        if await self._handle_main_tower_battle(record, parsed):
+            return
+
         if await self._handle_satellite_buttons(record, text, was_awaiting_training_reply):
             return
 
@@ -107,6 +111,35 @@ class ActionDispatcher:
             await executor.send_now(wb_action["command"], chat_id=wb_action["chat_id"], reason=wb_action["reason"])
             return True
         return False
+
+    # ---- 主塔進階戰鬥：每回合選擇戰術，交給策略層決定要點哪顆按鈕 ----
+    async def _handle_main_tower_battle(self, record, parsed):
+        buttons = record.get("buttons")
+        if not buttons:
+            return False
+
+        # 用 response_parser 已經判斷好的 shape 來確認，而不是重新對文字做
+        # pattern matching——shape 比對邏輯只在 main_tower_battle_prompt.py
+        # 一個地方維護，這裡單純信任上游結果。
+        if parsed.get("shape") != "main_tower_battle_prompt":
+            return False
+
+        structured = parsed.get("structured")
+        action = main_tower_battle_strategy.decide_action(structured, buttons)
+        if action:
+            await executor.click_button(
+                chat_id=record.get("chat_id"),
+                message_id=record.get("message_id"),
+                data=action["data"],
+                button_text=action["button_text"],
+                reason=action["reason"],
+            )
+            return True
+
+        # 判斷不出來（例如關鍵數值解析失敗、或必殺技按鈕沒對到），印出提醒但
+        # 不吃掉這則訊息，讓熊自己手動選——寧可少點一次，也不要亂點。
+        print(f"[主塔戰鬥] ⚠️ 策略無法判斷要選哪個戰術按鈕：{(record.get('text') or '')[:40]}...")
+        return True  # 已確認是主塔戰鬥訊息，不用再往下讓其他 handler 誤判
 
     # ---- 群星計畫（衛星培育）：帶按鈕的訊息，交給策略層決定要點哪顆按鈕 ----
     async def _handle_satellite_buttons(self, record, text, was_awaiting_training_reply):
