@@ -11,9 +11,13 @@ from log_maintenance import run_maintenance
 from display_formatter import format_display_line
 from action_dispatcher import ActionDispatcher
 from strategy_pipeline import StrategyPipeline
+from query_advisor_strategy import QueryAdvisorStrategy
 from strategies.market_tracking_strategy import MarketTrackingStrategy
 from strategies.chart_correlation_strategy import ChartCorrelationStrategy
 from strategies.contract_tracking_strategy import ContractTrackingStrategy
+from message_buffer import MessageBuffer
+from inventory_display_strategy import InventoryDisplayStrategy
+
 
 router = MessageRouter()
 
@@ -116,8 +120,8 @@ async def terminal_input_loop():
             # 用法：
             #   /auto                       查看三套系統目前開關狀態
             #   /auto <system> on|off       開啟/關閉指定系統
-            # <system> 可用簡稱：mtb / wb / sat，或完整 key：
-            #   main_tower_battle / world_boss / satellite_training
+            # <system> 可用簡稱：mtb / wb / sat / gc ，或完整 key：
+            #   main_tower_battle / world_boss / satellite_training / guard_clear
             _AUTO_ALIASES = {
                 "mtb": "main_tower_battle",
                 "main_tower": "main_tower_battle",
@@ -127,11 +131,14 @@ async def terminal_input_loop():
                 "sat": "satellite_training",
                 "satellite": "satellite_training",
                 "satellite_training": "satellite_training",
+                "gc": "guard_clear",
+                "guard": "guard_clear",
+                "guard_clear": "guard_clear",
             }
             _AUTO_USAGE = ("[錯誤] /auto 用法：\n"
                            "  /auto                    查看三套系統目前開關狀態\n"
                            "  /auto <system> on|off    開啟/關閉指定系統\n"
-                           "  <system>：mtb（主塔戰鬥）／wb（世界王）／sat（群星計畫）")
+                           "  <system>：mtb（主塔戰鬥）／wb（世界王）／sat（群星計畫）／gc（清除守衛）")
             parts = text.split()
             if len(parts) == 1:
                 print("[開關狀態]\n" + auto_toggle.status_summary(BASE_DIR))
@@ -218,9 +225,10 @@ async def on_record(record):
     print(format_display_line(record, parsed))
     await dispatcher.dispatch(record, parsed)
 
+message_buffer = MessageBuffer(on_flush=on_record)
 
 async def run():
-    monitor.ON_RECORD_CALLBACK = on_record
+    monitor.ON_RECORD_CALLBACK = message_buffer.handle   # 原本是 on_record
     # main.py 自己會透過 display_formatter 顯示每一則訊息，
     # 關掉 monitor.py 自帶的輸出，避免同一則訊息印兩次
     monitor.PRINT_ENABLED = False
@@ -236,7 +244,11 @@ async def run():
     print()
 
     print("正在連線 Telegram...")
-    await client.start()
+    try:
+        await client.start()
+    except (ConnectionError, OSError) as e:
+        print(f"[連線失敗] {e}，請確認網路狀態後重新啟動程式")
+        return
     print("✅ 連線成功，開始監聽中（Ctrl+C 停止）")
 
     global ACCOUNT_ID
@@ -254,17 +266,21 @@ async def run():
         common_data_dir=BASE_DIR / "data" / "common",
         enable_pulse=False,
     )
-    STRATEGY_PIPELINE = StrategyPipeline([market_tracking])
-
     contract_tracking = ContractTrackingStrategy(common_data_dir=BASE_DIR / "data" / "common")
-    STRATEGY_PIPELINE = StrategyPipeline([market_tracking, contract_tracking])
-
+    query_advisor = QueryAdvisorStrategy(
+        account_data_dir=BASE_DIR / "data" / str(ACCOUNT_ID),
+        common_data_dir=BASE_DIR / "data" / "common",
+    )
+    inventory_display = InventoryDisplayStrategy(
+        base_dir=BASE_DIR,
+        account_id_getter=_get_account_id,   # main.py 已經有這個函式，直接沿用
+    )
+    STRATEGY_PIPELINE = StrategyPipeline([market_tracking, contract_tracking, query_advisor, inventory_display])
     global CHART_CORRELATION
     CHART_CORRELATION = ChartCorrelationStrategy(
         common_data_dir=BASE_DIR / "data" / "common",
         media_dir=BASE_DIR / "data" / "common" / "chart_media",
     )
-
     asyncio.create_task(terminal_input_loop())
     await client.run_until_disconnected()
 

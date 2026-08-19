@@ -21,6 +21,8 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
+from battle_status import resolve_element_any
+
 
 ELEMENTS = ["火", "土", "金", "木", "水"]
 
@@ -132,7 +134,8 @@ class TopSelector:
     """
 
     @staticmethod
-    def recommend(tops: List[dict], weakness: WeaknessState, top_n: int = 3) -> List[dict]:
+    def recommend(tops: List[dict], weakness: WeaknessState, top_n: int = 3,
+                   catalog: Optional[dict] = None) -> List[dict]:
         """
         回傳依優先序排列的建議陀螺清單。
 
@@ -141,10 +144,18 @@ class TopSelector:
           2. 同屬性內,依戰力 (power) 由高到低
           3. 若同屬性戰力相同,強化值 (enhancement) 高者優先
 
-        注意:element 為 None(尚未綁定五行)的陀螺不會被選入,
-        因為沒有屬性資料就無法確認是否命中弱點,寧可不選也不要猜。
+        屬性比對改用 resolve_element_any()（頂層 element → binding.element_stage.element
+        → catalog fallback），不直接讀 t.get("element")——這樣呼叫端不管有沒有
+        事先做過 resolve_roster()，這裡都會拿到正確答案，不會因為漏了那一步
+        而安靜地漏選陀螺（2026-08-15 討論過的隱性耦合風險，這裡收斂掉）。
+        catalog 不傳就只看頂層/binding，行為跟舊版一致。
+
+        注意:兩步都查不到屬性的陀螺不會被選入,寧可不選也不要猜。
         """
-        candidates = [t for t in tops if t.get("element") == weakness.current_element]
+        candidates = [
+            t for t in tops
+            if resolve_element_any(t, catalog) == weakness.current_element
+        ]
 
         if not candidates:
             return []
@@ -156,14 +167,18 @@ class TopSelector:
         return candidates[:top_n]
 
     @staticmethod
-    def missing_element_warning(tops: List[dict], weakness: WeaknessState) -> Optional[str]:
+    def missing_element_warning(tops: List[dict], weakness: WeaknessState,
+                                 catalog: Optional[dict] = None) -> Optional[str]:
         """
         若手上完全沒有符合弱點屬性的陀螺,回傳警告文字,方便印出提醒人工介入。
         """
-        candidates = [t for t in tops if t.get("element") == weakness.current_element]
+        candidates = [
+            t for t in tops
+            if resolve_element_any(t, catalog) == weakness.current_element
+        ]
         if candidates:
             return None
-        unbound = [t for t in tops if t.get("element") is None]
+        unbound = [t for t in tops if resolve_element_any(t, catalog) is None]
         msg = f"⚠️ 目前弱點為「{weakness.current_element}屬性」,但手上沒有此屬性的陀螺可用!"
         if unbound:
             names = "、".join(t["name"] for t in unbound)

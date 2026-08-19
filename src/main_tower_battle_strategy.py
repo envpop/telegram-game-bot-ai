@@ -64,11 +64,20 @@ CHARGE_ENERGY_CAP = 80
 _ULTIMATE_BUTTON_TEXT_HINT = "必殺"
 
 
-def decide_action(structured, buttons):
+def decide_action(structured, buttons,
+                   critical_hp_ratio=CRITICAL_HP_RATIO,
+                   shield_phase_threshold=SHIELD_PHASE_THRESHOLD):
     """核心決策函式。
 
     structured: response_shapes/main_tower_battle_prompt.py 的 parse() 輸出
+                （或格式相容的 guard_battle_prompt.py 輸出——欄位子集一致：
+                own_hp/own_hp_max/energy/energy_max/shield）
     buttons: monitor 記錄的按鈕清單（extract_buttons() 的輸出格式）
+    critical_hp_ratio / shield_phase_threshold: 門檻常數，預設是 mtb 的數字。
+        2026-08-17 開放成參數：護衛戰鬥（guard_battle_strategy.py）可能是
+        「原本鎖定的護衛因重新增生換了屬性，沒發現就打下去」的不利對局，
+        跟 mtb 出戰陀螺保證至少中立的假設不同，不能沿用同一組數字，
+        改成參數讓呼叫端自己決定要用哪組——決策邏輯只有一份，門檻各自調。
 
     回傳 {"data": ..., "button_text": ..., "reason": ...} 或 None
     （關鍵數值解析不完整或找不到對應按鈕，交給人工介入，不亂點）。
@@ -97,7 +106,7 @@ def decide_action(structured, buttons):
 
     hp_ratio = own_hp / own_hp_max
 
-    if hp_ratio < CRITICAL_HP_RATIO:
+    if hp_ratio < critical_hp_ratio:
         matched = _find_button_by_action_code(buttons, "atk")
         if matched:
             return {
@@ -107,13 +116,13 @@ def decide_action(structured, buttons):
                           f"不管護盾階段，強攻靠吸血拚一口氣保命",
             }
 
-    if shield < SHIELD_PHASE_THRESHOLD:
+    if shield < shield_phase_threshold:
         matched = _find_button_by_action_code(buttons, "def")
         if matched:
             return {
                 "data": matched["data"],
                 "button_text": matched["text"],
-                "reason": f"護盾尚未達門檻（{shield}/{SHIELD_PHASE_THRESHOLD}），"
+                "reason": f"護盾尚未達門檻（{shield}/{shield_phase_threshold}），"
                           f"防禦階段，穩守堆疊護盾層數",
             }
     else:

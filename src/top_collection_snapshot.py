@@ -43,7 +43,7 @@ class GodTop:
 @dataclass
 class URLightEntry:
     """UR 的輕量記錄：只留名字/類型/戰力/狀態，不留天賦等完整細節。
-    存在的目的是讓後續（例如 forge_catalog）可以用名字反查屬性，
+    存在的目的是讓後續（例如 cast_tops_catalog）可以用名字反查屬性，
     不代表要在畫面上展示 UR 的完整細節——顯示層仍然只需要 ur_count / ur_by_type。"""
     index: int
     status: Optional[str]

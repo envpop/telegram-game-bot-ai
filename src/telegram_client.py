@@ -67,6 +67,11 @@ client = TelegramClient(
     SESSION_NAME,
     API_ID,
     API_HASH,
+    connection_retries=None,   # None = 無限重試，不要連個幾次就放棄
+    retry_delay=2,             # 每次重試間隔（秒），配合上面的無限重試
+    auto_reconnect=True,       # 連線中途斷線時自動重連
+    timeout=10,                # 單次連線嘗試最多等 10 秒，避免卡死看起來像當機
+    request_retries=5,         # 個別 API request 失敗時的重試次數
 )
 
 # ============================================================

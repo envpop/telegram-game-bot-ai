@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from top_collection_snapshot import parse_top_collection, GodTop
-from forge_result_parser import load_forge_catalog
+from forge_result_parser import load_cast_catalog
 
 
 RE_HEADER = re.compile(
@@ -117,21 +117,25 @@ def parse_talent_overview(message: str) -> list:
 # ---------- 合併：陀螺收藏（神階完整） + 天賦一覽（含五行） ----------
 
 def build_unified_view(collection_message: str, talent_message: str,
-                        forge_catalog_path: Optional[str] = None) -> list:
+                        cast_catalog_path: Optional[str] = None) -> list:
     """
     合併三個資料源做出完整陀螺一覽：
       1. 陀螺收藏（神階完整資料）
       2. 天賦一覽（已綁定陀螺的五行屬性）
-      3. forge_catalog.json（鑄造公告存下的屬性，補「未綁定」缺口，選用）
+      3. cast_tops_catalog.json（鑄造公告存下的屬性，補「未綁定」缺口，選用）
+         —— schema 是 {base_name: {"element":..., "build":{...}}}，
+         跟 battle_status.py 的 load_element_catalog() 是同一份格式，
+         element_stage 在 build 底下，不是頂層（2026-08-14 修正過一次
+         KeyError，因為改 schema 時這裡忘了同步更新）。
 
-    只在陀螺收藏出現、天賦一覽跟 forge_catalog 都沒有的（UR 且尚未綁定、
+    只在陀螺收藏出現、天賦一覽跟 cast_tops_catalog 都沒有的（UR 且尚未綁定、
     也沒抓到鑄造訊息），屬性維持 None——這是真的沒有資料，不是程式漏掉。
     """
     collection = parse_top_collection(collection_message)
     talents = parse_talent_overview(talent_message)
     talent_by_name = {t.name: t for t in talents}
     ur_status_by_name = {u.name: u.status for u in collection.ur_status_markers}
-    forge_catalog = load_forge_catalog(Path(forge_catalog_path)) if forge_catalog_path else {}
+    cast_catalog = load_cast_catalog(Path(cast_catalog_path)) if cast_catalog_path else {}
 
     unified = []
     seen_names = set()
@@ -178,17 +182,18 @@ def build_unified_view(collection_message: str, talent_message: str,
         })
         seen_names.add(t.name)
 
-    # UR 陀螺：未綁定的（陀螺收藏有，但天賦一覽沒有）—— 嘗試用 forge_catalog 補屬性
+    # UR 陀螺：未綁定的（陀螺收藏有，但天賦一覽沒有）—— 嘗試用 cast_tops_catalog 補屬性
     for u in collection.ur_entries:
         if u.name in seen_names:
             continue
-        forge = forge_catalog.get(u.name)
+        cast = cast_catalog.get(u.name)
+        build = (cast or {}).get("build") or {}
         unified.append({
             "name": u.name,
             "status": u.status,
             "type": u.type,
-            "element": forge["element"] if forge else None,
-            "element_stage": forge["element_stage"] if forge else None,
+            "element": cast["element"] if cast else None,
+            "element_stage": build.get("element_stage"),
             "power": u.power,
             "enhancement": None,
             "bind_type": None,
@@ -197,7 +202,7 @@ def build_unified_view(collection_message: str, talent_message: str,
             "talents": [],
             "resonance": None,
             "rarity": "UR",
-            "source": "collection+forge" if forge else "collection_only",
+            "source": "collection+cast" if cast else "collection_only",
         })
         seen_names.add(u.name)
 

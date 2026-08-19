@@ -1,33 +1,33 @@
 """
 主塔查詢 + 出戰建議（單體出戰體系）
 
-=== 假設與待確認事項（ASSUMPTIONS） ===
-本模組沒有拿到 tops.json 的實際 schema，roster 的欄位名稱是暫定的，
-串接進正式專案前請對照 tops.json 實際欄位改 KEY 名稱：
+roster 直接吃 tops.json 的 "detailed" 陣列，欄位對齊真實資料：
+    name / element / type / power / enhancement / bind_type / status
 
-    {
-        "id": "T0001",          # 穩定 ID
-        "name": "崩嶽神熊・摸摸撼地GO",
-        "element": "土",         # 木/火/土/金/水
-        "type": "攻擊型",        # 攻擊型/防禦型/持久型/平衡型
-        "power": 611,
-        "bound": None            # 靈魂綁定方向："爆擊" / "護盾" / "回歸" / None
-    }
-
-輪迴樓層映射：boss_catalog_main_tower.json 原本的 loop_mapping_note
-只是猜測（假設樓層數字會累加到 101 以上，再用 mod 換算回 51~100）。
-2026-08-14 拿到實際訊息樣本（第 2 輪迴・第 100 階）後確認：遊戲畫面
-把「輪迴數」跟「樓層數」分開顯示，樓層永遠是 1~100 內的數字，不會
-累加。get_boss_for_floor() 因此已經改成直接用訊息裡的「第 X 階」查表，
-不再做 mod 換算；loop 數字目前只作為顯示/紀錄用途，不影響查表結果。
+輪迴樓層映射方式是假設（見 boss_catalog_main_tower.json 的
+loop_mapping_note），實際遊戲畫面顯示方式需熊之後確認回報，
+必要時調整 get_boss_for_floor() 的映射公式。
 """
 
 import json
 from pathlib import Path
 
-BASE_DIR = Path(__file__).parent
-BOSS_CATALOG_PATH = BASE_DIR / "boss_catalog_main_tower.json"
-RULES_PATH = BASE_DIR / "element_type_rules.json"
+def _find_base_dir(start: Path) -> Path:
+    """往上找同時有 src/ 跟 data/ 的資料夾，對齊專案既有原則
+    （不寫死 .parent.parent，模組被移動位置也不會壞）。
+    找不到就退回 start 自己（方便單獨測試時用當前目錄）。"""
+    cur = start.resolve()
+    for _ in range(6):
+        if (cur / "src").is_dir() and (cur / "data").is_dir():
+            return cur
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return start.resolve()
+
+BASE_DIR = _find_base_dir(Path(__file__).parent)
+BOSS_CATALOG_PATH = BASE_DIR / "data" / "common" / "boss_catalog_main_tower.json"
+RULES_PATH = BASE_DIR / "data" / "common" / "element_type_rules.json"
 
 
 def load_json(path):
@@ -35,16 +35,21 @@ def load_json(path):
         return json.load(f)
 
 
-def get_boss_for_floor(floor: int, catalog: dict) -> dict:
+def get_boss_for_floor(raw_floor: int, catalog: dict) -> dict:
     """
-    依樓層數取得王資料。遊戲畫面的「輪迴數」跟「樓層數」是分開顯示的欄位，
-    樓層本身永遠是 1~100 內的數字（已用實際訊息樣本確認，見本檔頭部說明），
-    直接查表即可，不需要任何換算。
+    依樓層數取得王資料。raw_floor <= 100 直接查表；
+    超過 100（第二輪以後）依假設映射回 51~100 區間。
     """
     bosses = catalog["bosses"]
-    boss = bosses.get(str(floor))
+    if raw_floor <= 100:
+        effective_floor = raw_floor
+    else:
+        # 假設：51~100 這 50 階循環，第101階起對應回51階
+        effective_floor = ((raw_floor - 51) % 50) + 51
+
+    boss = bosses.get(str(effective_floor))
     if boss is None:
-        raise ValueError(f"樓層 {floor} 查無資料")
+        raise ValueError(f"樓層 {raw_floor}（映射後 {effective_floor}）查無資料")
     return boss
 
 
@@ -95,31 +100,27 @@ def recommend_tops(boss: dict, roster: list[dict], rules: dict, top_n: int = 5) 
     return scored[:top_n]
 
 
-def advise_for_floor(floor: int, roster: list[dict], top_n: int = 5) -> dict:
+def advise_for_floor(raw_floor: int, roster: list[dict], top_n: int = 5) -> dict:
     """對外主要入口：給樓層數 + roster，回傳王資料 + 建議清單"""
     catalog = load_json(BOSS_CATALOG_PATH)
     rules = load_json(RULES_PATH)
-    boss = get_boss_for_floor(floor, catalog)
+    boss = get_boss_for_floor(raw_floor, catalog)
     recommendations = recommend_tops(boss, roster, rules, top_n=top_n)
     return {
-        "floor": floor,
+        "floor": raw_floor,
         "boss": boss,
         "recommendations": recommendations,
     }
 
 
 if __name__ == "__main__":
-    # 範例用法（roster 為假資料，實際串接時換成從 tops.json 讀取）
-    example_roster = [
-        {"id": "T0001", "name": "崩嶽神熊・摸摸撼地GO", "element": "土", "type": "攻擊型", "power": 611, "bound": None},
-        {"id": "T0002", "name": "極・天熊・滅卻牙", "element": "火", "type": "攻擊型", "power": 580, "bound": "爆擊"},
-        {"id": "T0003", "name": "窈冥淵渟・玄冥神熊・摸摸寒淵GO", "element": "水", "type": "防禦型", "power": 640, "bound": "護盾"},
-    ]
+    with open("/mnt/user-data/uploads/tops.json", encoding="utf-8") as f:
+        roster = json.load(f)["detailed"]
 
-    result = advise_for_floor(84, example_roster)
+    result = advise_for_floor(100, roster)
     print(f"第 {result['floor']} 階王：{result['boss']['name']}"
           f"（{result['boss']['type']}・{result['boss']['element']}屬性）")
     print("建議出戰：")
     for r in result["recommendations"]:
-        print(f"  {r['name']}（{r['element']}・{r['type']}・戰力{r['power']}）"
+        print(f"  {r['name']}（{r['element']}・{r['type']}・戰力{r['power']}・+{r.get('enhancement')}）"
               f" 分數{r['_score']} {r['_reasons']}")

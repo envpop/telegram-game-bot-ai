@@ -11,10 +11,30 @@ profile_sync_strategy.py —— 陀螺／衛星／背包／道具說明 → 個�
 這裡只負責「判斷 + 存檔」，真正呼叫 executor 送出指令的動作留給呼叫端
 （main.py）執行——這支檔案完全不 import executor。
 
+=== 2026-08-17 收斂 ===
+原本這裡自己內建一套分頁組裝機制（_pending_assembly 等），是在
+message_buffer.py 出現之前寫的——那時候 MessageRouter 之前沒有任何東西
+處理 TG 自動分則，只能自己土法煉鋼等續頁。現在 message_buffer.py 已經
+在 MessageRouter.parse() 之前把陀螺清單／衛星圖鑑／綁定一覽組裝完整，
+這支檔案收到的內容一定已經是完整的——原本的組裝機制永遠不會被觸發
+（續頁在 message_buffer 那層就被吃掉合併了），整套刪除。
+
+同時，陀螺清單／衛星圖鑑／綁定一覽三種訊息不再自己重新呼叫
+inventory_parsers.parse_xxx() 解析一次——response_parser.py 底下的
+my_tops.py／satellite_catalog.py／bindings.py 這三個 shape 已經解析過了，
+這裡直接讀 parsed['shape']／parsed['structured']，只做「存檔」這一件事，
+不重工。跟 action_dispatcher.py 裡 _handle_main_tower_battle() 的既有
+原則一致：「用 response_parser 已經判斷好的 shape 來確認，而不是重新
+對文字做 pattern matching」。
+
+背包／道具說明目前還沒有對應的 response_shapes 檔案（沒有 shape 可以
+信任），所以這兩種維持原本讀 parsed['raw_text'] 直接判斷的做法，等之後
+真的要做 backpack shape 再一併收斂。
+
 用法：
     import profile_sync_strategy
 
-    result = profile_sync_strategy.handle_server_message(text, BASE_DIR, ACCOUNT_ID)
+    result = profile_sync_strategy.handle_server_message(parsed, BASE_DIR, ACCOUNT_ID)
     if result["handled"]:
         print(result["log"])
         if result["commands"]:
@@ -24,10 +44,19 @@ profile_sync_strategy.py —— 陀螺／衛星／背包／道具說明 → 個�
         return
 """
 
-import time
-
 import backpack_watcher
 import inventory_parsers
+
+# response_parser.py 的 _KNOWN_SHAPES 裡，三種訊息各自的 shape 名稱
+# （shape_module.__name__.rsplit(".", 1)[-1] 算出來的值，對照
+# parsing/response_shapes/ 底下的檔名）。
+_SHAPE_MY_TOPS = "my_tops"
+_SHAPE_SATELLITE_CATALOG = "satellite_catalog"
+_SHAPE_BINDINGS = "bindings"
+_SHAPE_ACTIVE_TOP_CONFIRMATION = "active_top_confirmation"
+_SHAPE_TOP_RECORD = "top_record"
+_SHAPE_SUB_TOP_CONFIRMATION = "sub_top_confirmation"
+_SHAPE_SUB_TOP_STATUS = "sub_top_status"
 
 
 def _no_match():
@@ -43,66 +72,41 @@ def _handled(log, commands=None, commands_reason=None):
     }
 
 
-# ============================================================
-# 多頁／多則組裝狀態（陀螺清單、衛星圖鑑都可能因為內容太多，
-# 被遊戲主動分頁或被 TG 從中間硬切，一次收不到完整內容）
-# ============================================================
-#
-# key 用 account_id：這支 bot 一次只服務一個登入中的帳號（換帳號需要
-# 重啟，見 credentials.py / accounts.json 既有限制），不需要再拆 chat_id。
-#
-# 判斷「接下來這則不認得格式的伺服器訊息，是不是接續內容」的邏輯很單純：
-# 只要這個帳號目前「正在組裝中」，就先試著接上去、重新解析；
-# 接完發現還是不完整，就繼續等下一則；沒有正在組裝中，才真的當無關訊息忽略。
-# 這是故意簡化的判斷（不看訊息間隔時間），因為陀螺清單／衛星圖鑑的分頁／
-# 分則訊息都是遊戲/TG 緊接著送出，中間插入其他無關伺服器訊息的機率極低；
-# 如果之後發現誤吃到不相關訊息，可以再加時間窗限制。
+def handle_server_message(parsed, base_dir, account_id):
+    """依 parsed['shape'] 分流陀螺清單／衛星圖鑑／綁定一覽；背包／道具說明
+    這兩種還沒有 shape，退回讀 parsed['raw_text'] 直接判斷。
 
-_pending_assembly = {}  # account_id -> {"kind": "tops"|"satellite"|"bindings", "parts": [str, ...], "started_at": float}
-
-_ASSEMBLY_STALE_SECONDS = 30  # 組裝卡超過這麼久還沒完成就視為異常放棄，避免舊狀態一直誤吃之後的訊息
-
-
-def _start_assembly(account_id, kind, text):
-    _pending_assembly[account_id] = {
-        "kind": kind,
-        "parts": [text],
-        "started_at": time.time(),
-    }
-
-
-def _get_pending(account_id):
-    pending = _pending_assembly.get(account_id)
-    if pending is None:
-        return None
-    if time.time() - pending["started_at"] > _ASSEMBLY_STALE_SECONDS:
-        del _pending_assembly[account_id]
-        return None
-    return pending
-
-
-def _clear_pending(account_id):
-    _pending_assembly.pop(account_id, None)
-
-
-def handle_server_message(text, base_dir, account_id):
-    """依序比對陀螺清單／衛星圖鑑／背包／道具說明四種格式。
-
-    四選一，命中第一個符合的格式就直接存檔、回傳，不會繼續比對後面幾種
-    （四種訊息格式彼此不會重疊，所以用 if/return 依序試沒有互斥問題）。
+    四選一，命中第一個符合的格式就直接存檔、回傳，不會繼續比對後面幾種。
 
     回傳格式：
         {"handled": bool, "log": str|None, "commands": [str, ...], "commands_reason": str|None}
     handled=False 代表這則訊息不屬於這四種，呼叫端應該繼續往下跑其他判斷。
     """
-    if inventory_parsers.is_my_tops_message(text):
-        return _handle_tops_start(text, base_dir, account_id)
+    shape = parsed.get("shape")
+    structured = parsed.get("structured") or {}
 
-    if inventory_parsers.is_satellite_catalog_message(text):
-        return _handle_satellite_start(text, base_dir, account_id)
+    if shape == _SHAPE_MY_TOPS:
+        return _handle_tops(structured, base_dir, account_id)
 
-    if inventory_parsers.is_bindings_message(text):
-        return _handle_bindings_start(text, base_dir, account_id)
+    if shape == _SHAPE_SATELLITE_CATALOG:
+        return _handle_satellite(structured, base_dir, account_id)
+
+    if shape == _SHAPE_BINDINGS:
+        return _handle_bindings(structured, base_dir, account_id)
+
+    if shape == _SHAPE_ACTIVE_TOP_CONFIRMATION:
+        return _handle_active_top_confirmation(structured, base_dir, account_id)
+
+    if shape == _SHAPE_TOP_RECORD:
+        return _handle_top_record_active_sync(structured, base_dir, account_id)
+
+    if shape == _SHAPE_SUB_TOP_CONFIRMATION:
+        return _handle_sub_top_confirmation(structured, base_dir, account_id)
+
+    if shape == _SHAPE_SUB_TOP_STATUS:
+        return _handle_sub_top_status(structured, base_dir, account_id)
+
+    text = parsed.get("raw_text") or ""
 
     if backpack_watcher.is_backpack_message(text):
         result = backpack_watcher.parse_backpack(text)
@@ -125,55 +129,58 @@ def handle_server_message(text, base_dir, account_id):
         backpack_watcher.save_item_description(base_dir, desc["display_name"], desc)
         return _handled(f"[道具說明] 已記錄：{desc['display_name']} → {desc['description']}")
 
-    # 沒有比對到任何已知的開頭格式：如果這個帳號目前有正在組裝中的清單
-    # （陀螺清單／衛星圖鑑被拆成多則訊息還沒收完），這則很可能是接續內容，
-    # 試著接上去；沒有組裝中的狀態，才是真的無關訊息，忽略。
-    pending = _get_pending(account_id)
-    if pending is not None:
-        return _continue_assembly(pending, text, base_dir, account_id)
-
     return _no_match()
 
 
-def _handle_tops_start(text, base_dir, account_id):
-    result = inventory_parsers.parse_my_tops(text)
-    if result["is_complete"]:
-        inventory_parsers.save_tops_snapshot(base_dir, account_id, result)
-        return _handled(f"[陀螺清單] 已更新，共 {result['total_count']} 顆")
+def _incomplete_suffix(structured):
+    """message_buffer.py 在等續頁逾時（3 秒）沒等到時，會直接把目前收到的
+    內容送出來，這裡 structured['is_complete'] 可能仍是 False——這種情況
+    還是照存（部分資料好過完全不存），但在 log 裡老實標注，不要假裝完整。"""
+    if structured.get("is_complete") is False:
+        return f"（⚠️ 疑似不完整：{structured.get('total_count')}/{structured.get('declared_count')}）"
+    return ""
 
-    _start_assembly(account_id, "tops", text)
+
+def _handle_tops(structured, base_dir, account_id):
+    _enrich_and_save_tops(structured, base_dir, account_id)
     return _handled(
-        f"[陀螺清單] 內容被分頁，等待後續分頁中"
-        f"（目前 {result['total_count']}/{result['declared_count']} 顆）"
+        f"[陀螺清單] 已更新，共 {structured.get('total_count')} 顆{_incomplete_suffix(structured)}"
     )
 
 
-def _handle_satellite_start(text, base_dir, account_id):
-    result = inventory_parsers.parse_satellite_catalog(text)
-    if result["is_complete"]:
-        inventory_parsers.save_satellites_snapshot(base_dir, account_id, result)
-        return _handled(f"[衛星清單] 已更新，共 {result['total_count']} 顆")
+def _enrich_and_save_tops(result, base_dir, account_id):
+    """「陀螺收藏」查詢完成後，存檔前先補回兩塊會被覆蓋掉的資料：
 
-    _start_assembly(account_id, "satellite", text)
+    1. annotate_special_source()：不需要綁定資料就能跑，靠陀螺名字比對
+       special_tops_catalog.json / cast_tops_catalog.json，補上 element/
+       base_name/source_category——這步每次查陀螺收藏都該做，不用等綁定一覽。
+    2. carry_over_enrichment()：把舊快照裡已有的 binding（天賦養成資料）
+       依 match_key 接回來——這塊只有綁定一覽查詢會提供，陀螺收藏本身沒有，
+       不接回就會被整份覆蓋洗掉（2026-08-15 確認的實際 bug）。
+
+    舊快照讀不到（第一次用、還沒存過）就跳過第 2 步，全部 binding 保持 None，
+    這是正確的初始狀態，不是錯誤。
+    """
+    inventory_parsers.annotate_special_source(result["detailed"], base_dir, account_id)
+
+    old = inventory_parsers.load_tops_snapshot(base_dir, account_id)
+    if old is not None:
+        inventory_parsers.carry_over_enrichment(result["detailed"], old.get("detailed", []))
+    else:
+        for top in result["detailed"]:
+            top["binding"] = None
+
+    inventory_parsers.save_tops_snapshot(base_dir, account_id, result)
+
+
+def _handle_satellite(structured, base_dir, account_id):
+    inventory_parsers.save_satellites_snapshot(base_dir, account_id, structured)
     return _handled(
-        f"[衛星清單] 內容被截斷，等待後續分則中"
-        f"（目前 {result['total_count']}/{result['declared_count']} 顆）"
+        f"[衛星清單] 已更新，共 {structured.get('total_count')} 顆{_incomplete_suffix(structured)}"
     )
 
 
-def _handle_bindings_start(text, base_dir, account_id):
-    result = inventory_parsers.parse_bindings(text)
-    if result["is_complete"]:
-        return _finish_bindings(result, base_dir, account_id)
-
-    _start_assembly(account_id, "bindings", text)
-    return _handled(
-        f"[綁定一覽] 內容被截斷，等待後續分則中"
-        f"（目前 {result['total_count']}/{result['declared_count']} 顆）"
-    )
-
-
-def _finish_bindings(bindings_result, base_dir, account_id):
+def _handle_bindings(bindings_result, base_dir, account_id):
     """綁定一覽解析完整後：讀回既有的陀螺清單快照，合併綁定資料，存回 tops.json。
 
     這裡故意不另外存一份 bindings.json——綁定資料本來就是依附在陀螺身上的
@@ -183,7 +190,7 @@ def _finish_bindings(bindings_result, base_dir, account_id):
     tops_result = inventory_parsers.load_tops_snapshot(base_dir, account_id)
     if tops_result is None:
         return _handled(
-            f"[綁定一覽] 解析完成（共 {bindings_result['total_count']} 顆），"
+            f"[綁定一覽] 解析完成（共 {bindings_result.get('total_count')} 顆），"
             f"但找不到既有的陀螺清單快照，無法合併——請先觸發一次「我的陀螺」再重新查詢綁定一覽"
         )
 
@@ -191,43 +198,191 @@ def _finish_bindings(bindings_result, base_dir, account_id):
     merge_stats = inventory_parsers.merge_bindings_into_tops(tops_result, bindings_result)
     inventory_parsers.save_tops_snapshot(base_dir, account_id, tops_result)
 
-    log = f"[綁定一覽] 已合併進陀螺清單，配對成功 {merge_stats['matched_count']}/{merge_stats['total_bindings']} 顆"
+    log = (
+        f"[綁定一覽] 已合併進陀螺清單，配對成功 "
+        f"{merge_stats['matched_count']}/{merge_stats['total_bindings']} 顆"
+        f"{_incomplete_suffix(bindings_result)}"
+    )
     if merge_stats["unmatched_binding_count"]:
         log += f"（⚠️ {merge_stats['unmatched_binding_count']} 筆找不到對應陀螺，詳見 log）"
     return _handled(log)
 
 
-def _continue_assembly(pending, text, base_dir, account_id):
-    pending["parts"].append(text)
-    merged = inventory_parsers.merge_message_parts(pending["parts"])
+def _find_top_by_name_power(detailed, name, power):
+    """名字是簡化過的（拿掉稱號前綴/強化值/綁定標籤），不能直接跟
+    tops.json 的完整 name 欄位比對相等，用「子字串 + 戰力消歧」——
+    子字串比對抓出候選，戰力（tops 不會重複，見專案筆記）用來確保唯一。
+    出戰確認訊息／陀螺戰績兩個來源共用這份邏輯，不要各自寫一次。
+    """
+    if not name or power is None:
+        return None
 
-    if pending["kind"] == "tops":
-        result = inventory_parsers.parse_my_tops(merged)
-        if result["is_complete"]:
-            inventory_parsers.save_tops_snapshot(base_dir, account_id, result)
-            _clear_pending(account_id)
-            return _handled(f"[陀螺清單] 分頁組裝完成，共 {result['total_count']} 顆")
+    candidates = [t for t in detailed if name in (t.get("name") or "") and t.get("power") == power]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None  # 找不到或有多個候選（理論上不該發生），不硬猜，交給呼叫端老實回報
+
+
+def _sync_active_status(base_dir, account_id, name, power, source_label):
+    """把 tops.json 裡「目前出戰是誰」同步成 name/power 指到的那顆。
+    出戰確認訊息／陀螺戰績兩個來源共用這份邏輯，只有 log 前綴（source_label）不同。
+    """
+    tops_result = inventory_parsers.load_tops_snapshot(base_dir, account_id)
+    if tops_result is None:
         return _handled(
-            f"[陀螺清單] 仍在等待後續分頁"
-            f"（目前 {result['total_count']}/{result['declared_count']} 顆）"
+            f"[{source_label}] 目前出戰為「{name}」，"
+            f"但找不到既有的陀螺清單快照，無法同步狀態——請先觸發一次「我的陀螺」"
         )
 
-    if pending["kind"] == "bindings":
-        result = inventory_parsers.parse_bindings(merged)
-        if result["is_complete"]:
-            _clear_pending(account_id)
-            return _finish_bindings(result, base_dir, account_id)
+    detailed = tops_result.get("detailed", [])
+    matched = _find_top_by_name_power(detailed, name, power)
+    if matched is None:
         return _handled(
-            f"[綁定一覽] 仍在等待後續分則"
-            f"（目前 {result['total_count']}/{result['declared_count']} 顆）"
+            f"[{source_label}] 目前出戰為「{name}」，"
+            f"但陀螺清單裡找不到唯一對應的項目，無法同步狀態（可能名字/戰力比對不到候選，或有多個候選）"
         )
 
-    result = inventory_parsers.parse_satellite_catalog(merged)
-    if result["is_complete"]:
-        inventory_parsers.save_satellites_snapshot(base_dir, account_id, result)
-        _clear_pending(account_id)
-        return _handled(f"[衛星清單] 分則組裝完成，共 {result['total_count']} 顆")
-    return _handled(
-        f"[衛星清單] 仍在等待後續分則"
-        f"（目前 {result['total_count']}/{result['declared_count']} 顆）"
+    if matched.get("status") == "active":
+        return _handled(f"[{source_label}] 目前出戰為「{name}」（#{matched['index']}），跟已知狀態一致，不用同步")
+
+    for t in detailed:
+        if t.get("status") == "active":
+            t["status"] = "bench"
+    matched["status"] = "active"
+
+    inventory_parsers.save_tops_snapshot(base_dir, account_id, tops_result)
+    return _handled(f"[{source_label}] ✅ 已同步：目前出戰為「{name}」（#{matched['index']}）")
+
+
+def _handle_active_top_confirmation(confirmation, base_dir, account_id):
+    """「出戰 N」確認訊息進來時，把 tops.json 裡「目前出戰是誰」同步更新。
+
+    這條路徑之前完全沒人處理，導致切換出戰後 tops.json 立刻過期——
+    直到下次查「我的陀螺」才會重新對齊。清護衛半自動化因此撞到「同一個
+    切換動作被重複執行」的迴圈（2026-08-19 實測發現），這裡補上之後，
+    任何讀 roster 的功能都能拿到即時準確的「目前出戰」狀態，不只是
+    清護衛這一個呼叫端受惠。
+
+    2026-08-19 補上：這則訊息常夾帶副陀螺被自動卸下的資訊（遊戲規則：
+    副陀螺五行不能跟主陀螺相同），主同步做完之後順便處理——具名卸下的
+    情況要额外把那顆改回 bench（不然它會一直停在 secondary，跟遊戲
+    實際狀態不符）；「這顆原本是副陀螺」的情況不用另外處理，反正主同步
+    已經把它標成 active，跟 secondary 天然互斥。
+    """
+    result = _sync_active_status(
+        base_dir, account_id,
+        confirmation.get("name"), confirmation.get("power"),
+        source_label="出戰",
     )
+
+    unequipped_name = confirmation.get("secondary_unequipped_name")
+    if unequipped_name:
+        sub_result = _sync_secondary_status(base_dir, account_id, unequipped_name, equip=False)
+        result["log"] = f"{result['log']}\n{sub_result['log']}"
+
+    return result
+
+
+def _handle_top_record_active_sync(structured, base_dir, account_id):
+    """陀螺戰績是「目前出戰是誰」的第四個資訊來源（見 top_record.py 的
+    2026-08-19 補充說明）。這裡回傳 handled=True——陀螺戰績訊息本身
+    不需要再往下讓其他 handler 判斷（world_boss/main_tower_battle/
+    guard_clear/satellite_buttons 都不會處理這個 shape），提早結束
+    dispatch() 這輪判斷，跟其他三個來源的處理方式一致。
+
+    抽取失敗（active_name 是 None，理論上不該發生，陀螺戰績訊息一定有
+    出戰那行）就不算 handled，交給後面的 fallback 判斷（不會誤傷，
+    反正也不會比對到背包/道具說明）。
+    """
+    name = structured.get("active_name")
+    if not name:
+        return _no_match()
+    return _sync_active_status(
+        base_dir, account_id,
+        name, structured.get("active_power"),
+        source_label="出戰",
+    )
+
+
+def _find_top_by_name_only(detailed, name):
+    """副陀螺相關訊息沒有戰力可以消歧（跟出戰確認訊息不同），只能用
+    名字子字串比對，候選不唯一就老實回報，不硬猜。"""
+    if not name:
+        return None
+    candidates = [t for t in detailed if name in (t.get("name") or "")]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _sync_secondary_status(base_dir, account_id, name, equip: bool):
+    """把 tops.json 裡「目前副陀螺是誰」同步更新。
+    equip=True：把 name 指到的那顆標成 secondary（同時把舊的 secondary 改回 bench）。
+    equip=False：把 name 指到的那顆從 secondary 改回 bench（不影響其他欄位）。
+    """
+    tops_result = inventory_parsers.load_tops_snapshot(base_dir, account_id)
+    if tops_result is None:
+        return _handled(f"[副陀螺] 涉及「{name}」，但找不到既有的陀螺清單快照，無法同步狀態")
+
+    detailed = tops_result.get("detailed", [])
+    matched = _find_top_by_name_only(detailed, name)
+    if matched is None:
+        return _handled(f"[副陀螺] 涉及「{name}」，但陀螺清單裡找不到唯一對應的項目，無法同步狀態")
+
+    if equip:
+        if matched.get("status") == "secondary":
+            return _handled(f"[副陀螺] 目前副陀螺為「{name}」（#{matched['index']}），跟已知狀態一致，不用同步")
+        for t in detailed:
+            if t.get("status") == "secondary":
+                t["status"] = "bench"
+        matched["status"] = "secondary"
+        log = f"[副陀螺] ✅ 已同步：目前副陀螺為「{name}」（#{matched['index']}）"
+    else:
+        if matched.get("status") != "secondary":
+            return _handled(f"[副陀螺] 「{name}」（#{matched['index']}）已卸下，跟已知狀態一致，不用同步")
+        matched["status"] = "bench"
+        log = f"[副陀螺] ✅ 已同步：「{name}」（#{matched['index']}）已卸下"
+
+    inventory_parsers.save_tops_snapshot(base_dir, account_id, tops_result)
+    return _handled(log)
+
+
+def _handle_sub_top_confirmation(confirmation, base_dir, account_id):
+    """「副陀螺 N」確認訊息進來時，把 tops.json 裡「目前副陀螺是誰」同步更新。"""
+    name = confirmation.get("name")
+    if not name:
+        return _no_match()
+    return _sync_secondary_status(base_dir, account_id, name, equip=True)
+
+
+def _handle_sub_top_status(structured, base_dir, account_id):
+    """「副陀螺」無參數查詢：equipped=True 就同步成那顆，equipped=False
+    就確保沒有任何一顆停留在 secondary（可能之前切換主陀螺時自動卸下，
+    這次查詢正好用來確認、補上同步）。"""
+    if structured.get("equipped") is None:
+        return _no_match()  # 格式不符已知兩種變體，不強行處理
+
+    if structured.get("equipped") is False:
+        return _clear_secondary_status(base_dir, account_id)
+
+    name = structured.get("name")
+    if not name:
+        return _no_match()
+    return _sync_secondary_status(base_dir, account_id, name, equip=True)
+
+
+def _clear_secondary_status(base_dir, account_id):
+    tops_result = inventory_parsers.load_tops_snapshot(base_dir, account_id)
+    if tops_result is None:
+        return _no_match()
+
+    detailed = tops_result.get("detailed", [])
+    cleared = [t for t in detailed if t.get("status") == "secondary"]
+    if not cleared:
+        return _handled("[副陀螺] 查詢結果為未裝，跟已知狀態一致，不用同步")
+
+    for t in cleared:
+        t["status"] = "bench"
+    inventory_parsers.save_tops_snapshot(base_dir, account_id, tops_result)
+    names = "、".join(t.get("name", "?") for t in cleared)
+    return _handled(f"[副陀螺] ✅ 已同步：查詢結果為未裝，清掉舊記錄（{names}）")

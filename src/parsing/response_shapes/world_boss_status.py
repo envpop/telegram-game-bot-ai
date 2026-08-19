@@ -21,6 +21,17 @@ weakness_matcher.py 裡已經驗證過的 regex 邏輯重複維護兩份；這�
 signature(): 判斷一段文字是不是這個 shape
 parse(): 抽成結構化資料
 format_for_display(): 組出精簡摘要文字
+
+=== 2026-08-17 修正 ===
+原本 format_for_display() 多要 account_id/base_dir/raw_text 三個參數，
+想在這裡順便呼叫 append_recommendation_footer() 附加建議。但
+response_parser.py 對所有 shape 一律單參數呼叫 format_for_display(structured)，
+三個參數永遠是 None——account_id 雖然有 os.environ 當 fallback，但判斷式是
+`if account_id and raw_text`，raw_text 永遠拿不到，這個分支從沒被觸發過，
+跟 top_record.py 是同一種死分支模式。建議 footer 現在統一由
+query_advisor_strategy.py 在 pipeline 後段處理（它直接吃訊息原文呼叫
+query_reactor.handle_query_reply()，不依賴這裡的 structured），這裡只管
+「文字 → structured → 精簡摘要顯示文字」，回到跟其他 shape 一致的單參數介面。
 """
 import re
 
@@ -60,6 +71,10 @@ def parse(text):
 
 
 def format_for_display(parsed):
+    """組出精簡摘要文字。建議 footer 不在這裡加，交給
+    query_advisor_strategy.py 在 pipeline 後段處理（它直接讀訊息原文，
+    不依賴這裡重組過的精簡格式——handle_query_reply 認的是原始文字裡
+    「🔮 弱點屬性」這類固定樣式）。"""
     lines = []
     if parsed["boss_name"]:
         stage = f"第{parsed['stage']}階 " if parsed["stage"] else ""

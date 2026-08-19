@@ -2,12 +2,14 @@
 
 import auto_toggle
 import executor
+import guard_clear_strategy
 import main_tower_battle_strategy
 import profile_sync_strategy
 import satellite_training_strategy
 import scheduler
 import world_boss_strategy
 from reaction_rules import ReactionRuleEngine
+from roster_loader import load_roster
 
 
 class ActionDispatcher:
@@ -54,13 +56,16 @@ class ActionDispatcher:
 
         # ---- 以下 source_type 只會是 "server" ----
 
-        if await self._handle_profile_sync(text):
+        if await self._handle_profile_sync(parsed):
             return
 
         if await self._handle_world_boss_status_query(text):
             return
 
         if await self._handle_main_tower_battle(record, parsed):
+            return
+
+        if await self._handle_guard_clear(record, parsed):
             return
 
         if await self._handle_satellite_buttons(record, text, was_awaiting_training_reply):
@@ -96,8 +101,15 @@ class ActionDispatcher:
         return False  # 沒有任何策略模組判斷出動作，純資訊公告
 
     # ---- 陀螺／衛星／背包／道具說明：四種資料同步都交給 profile_sync_strategy 統一處理 ----
-    async def _handle_profile_sync(self, text):
-        sync_result = profile_sync_strategy.handle_server_message(text, self.base_dir, self.account_id)
+    async def _handle_profile_sync(self, parsed):
+        # 改吃整包 parsed（不只 text）：陀螺清單／衛星圖鑑／綁定一覽三種
+        # 已經由 response_parser.py 解析過（parsed['shape']/['structured']），
+        # profile_sync_strategy 直接讀這裡的結果存檔，不再重新解析一次
+        # 原文——跟 _handle_main_tower_battle() 信任上游 shape 判斷的原則
+        # 一致。parsed['raw_text'] 一律都有（見 message_router._base_result()），
+        # 背包／道具說明這兩種還沒有 shape，profile_sync_strategy 內部會
+        # 退回讀這個欄位直接判斷。
+        sync_result = profile_sync_strategy.handle_server_message(parsed, self.base_dir, self.account_id)
         if not sync_result["handled"]:
             return False
         print(sync_result["log"])
@@ -154,6 +166,63 @@ class ActionDispatcher:
         # 不吃掉這則訊息，讓熊自己手動選——寧可少點一次，也不要亂點。
         print(f"[主塔戰鬥] ⚠️ 策略無法判斷要選哪個戰術按鈕：{(record.get('text') or '')[:40]}...")
         return True  # 已確認是主塔戰鬥訊息，不用再往下讓其他 handler 誤判
+
+    # ---- 清護衛（半自動）：查詢結果判斷出手／換陀螺、結果訊息判斷是否繼續、
+    #      沒一擊拆掉時的按鈕戰鬥沿用 main_tower_battle_strategy（更保守門檻）----
+    async def _handle_guard_clear(self, record, parsed):
+        shape = parsed.get("shape")
+        if shape not in ("guard_status", "guard_clear_outcome", "guard_battle_prompt"):
+            return False
+
+        if not auto_toggle.is_enabled(self.base_dir, guard_clear_strategy.SYSTEM_KEY):
+            return False  # 不吃掉訊息：關閉時顯示照常，只是不自動出手
+
+        if shape == "guard_status":
+            roster = load_roster(self.base_dir, self.account_id)
+            action = guard_clear_strategy.decide_action(parsed, roster)
+            if action is None:
+                return False  # 不是「還有護衛」的查詢結果，交給其他 handler
+            if action["mode"] == "none":
+                print(f"[清護衛] {action['reason']}")
+                return False  # 沒有動作可送，不吃掉這則訊息
+            await executor.send_sequence(action["commands"], interval_seconds=2, reason=action["reason"])
+            print(f"[清護衛] ✅ {action['reason']}")
+            return True
+
+        if shape == "guard_clear_outcome":
+            action = guard_clear_strategy.decide_after_outcome(parsed)
+            if action["mode"] == "none":
+                print(f"[清護衛] {action['reason']}")
+                return False
+            await executor.send_now(action["commands"][0], reason=action["reason"])
+            print(f"[清護衛] 🔁 {action['reason']}")
+            return True
+
+        # shape == "guard_battle_prompt"：沒一擊拆掉，進入按鈕戰鬥模式，
+        # 沿用主塔戰鬥的決策邏輯，但門檻更保守（見 guard_clear_strategy.py
+        # 的 GUARD_CRITICAL_HP_RATIO / GUARD_SHIELD_PHASE_THRESHOLD 說明）。
+        buttons = record.get("buttons")
+        if not buttons:
+            return False
+
+        structured = parsed.get("structured")
+        action = main_tower_battle_strategy.decide_action(
+            structured, buttons,
+            critical_hp_ratio=guard_clear_strategy.GUARD_CRITICAL_HP_RATIO,
+            shield_phase_threshold=guard_clear_strategy.GUARD_SHIELD_PHASE_THRESHOLD,
+        )
+        if action:
+            await executor.click_button(
+                chat_id=record.get("chat_id"),
+                message_id=record.get("message_id"),
+                data=action["data"],
+                button_text=action["button_text"],
+                reason=action["reason"],
+            )
+            return True
+
+        print(f"[護衛戰鬥] ⚠️ 策略無法判斷要選哪個戰術按鈕：{(record.get('text') or '')[:40]}...")
+        return True  # 已確認是護衛戰鬥訊息，不用再往下讓其他 handler 誤判
 
     # ---- 群星計畫（衛星培育）：帶按鈕的訊息，交給策略層決定要點哪顆按鈕 ----
     async def _handle_satellite_buttons(self, record, text, was_awaiting_training_reply):

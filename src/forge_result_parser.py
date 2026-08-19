@@ -7,7 +7,7 @@ forge_result_parser.py
 之後的收藏/天賦清單都不會再重複顯示。
 
 用法：每次抓到「鑄造完成」訊息就呼叫 parse_forge_result()，
-存進 forge_catalog（依名稱 key），之後 talent_overview.build_unified_view()
+存進 cast_tops_catalog（依名稱 key），之後 talent_overview.build_unified_view()
 遇到查無屬性的陀螺，可以 fallback 查這份 catalog 補上。
 """
 
@@ -64,27 +64,57 @@ def parse_forge_result(message: str) -> Optional[ForgeResult]:
 
 
 # ---------- 累積型 catalog：每次鑄造訊息進來就補一筆 ----------
+#
+# 存檔格式對齊 battle_status.py 的 load_element_catalog() 期待的
+# cast_tops_catalog.json 格式：{base_name: {"element":..., "build":{...}}}
+# 鑄造陀螺的 base_name 就是 name 本身（已用 tops.json 驗證：🍄/🥀/🏎/🦑
+# 等鑄造項目的 base_name 欄位皆與 name 相同）。
 
-def load_forge_catalog(path: Path) -> dict:
+def _to_catalog_entry(result: ForgeResult) -> dict:
+    return {
+        "element": result.element,
+        "build": {
+            "type": result.type,
+            "element_stage": result.element_stage,
+            "power": result.power,
+            "atk": result.atk,
+            "defense": result.defense,
+            "endurance": result.endurance,
+            "rarity": result.rarity,
+            "stars": result.stars,
+            "tier_label": result.tier_label,
+        },
+    }
+
+
+def load_cast_catalog(path: Path) -> dict:
     if path.exists():
         with open(path, encoding="utf-8") as f:
             return json.load(f)
     return {}
 
 
-def save_forge_catalog(catalog: dict, path: Path):
+def save_cast_catalog(catalog: dict, path: Path):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(catalog, f, ensure_ascii=False, indent=2)
 
 
-def add_forge_result(message: str, catalog_path: Path) -> Optional[ForgeResult]:
+def add_cast_entry(message: str, catalog_path: Path) -> Optional[ForgeResult]:
+    """解析一則鑄造完成訊息，寫進 cast_tops_catalog.json（依名稱累加/覆蓋）。"""
     result = parse_forge_result(message)
     if result is None:
         return None
-    catalog = load_forge_catalog(catalog_path)
-    catalog[result.name] = asdict(result)
-    save_forge_catalog(catalog, catalog_path)
+    catalog = load_cast_catalog(catalog_path)
+    catalog[result.name] = _to_catalog_entry(result)
+    save_cast_catalog(catalog, catalog_path)
     return result
+
+
+# 舊名字保留為別名，避免其他還沒改完的呼叫端直接炸掉；
+# 新程式碼一律用上面的 load_cast_catalog / save_cast_catalog / add_cast_entry。
+load_forge_catalog = load_cast_catalog
+save_forge_catalog = save_cast_catalog
+add_forge_result = add_cast_entry
 
 
 if __name__ == "__main__":

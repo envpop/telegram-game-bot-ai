@@ -34,6 +34,18 @@ from .response_shapes import contract_quote
 from .response_shapes import world_boss_status
 from .response_shapes import world_boss_battle_report
 from .response_shapes import main_tower_battle_prompt
+from .response_shapes import top_record
+from .response_shapes import guard_status
+from .response_shapes import satellite_catalog
+from .response_shapes import my_tops
+from .response_shapes import bindings
+from .response_shapes import guard_status
+from .response_shapes import guard_clear_outcome
+from .response_shapes import guard_battle_prompt
+from .response_shapes import active_top_confirmation
+from .response_shapes import sub_top_confirmation
+from .response_shapes import sub_top_status
+
 
 _ROUTE_MAP = {
     ServerSubtype.RESPONSE: "server_response_flow",
@@ -54,9 +66,20 @@ _KNOWN_SHAPES = [
     trade_confirmation,
     contract_overview,
     contract_quote,
+    top_record,
     world_boss_status,
     world_boss_battle_report,
     main_tower_battle_prompt,
+    guard_status,
+    satellite_catalog,
+    my_tops,
+    bindings,
+    guard_status,
+    guard_clear_outcome,
+    guard_battle_prompt,
+    active_top_confirmation,
+    sub_top_confirmation,
+    sub_top_status,
 ]
 
 

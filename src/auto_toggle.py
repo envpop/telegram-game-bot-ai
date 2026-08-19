@@ -23,6 +23,7 @@ SYSTEM_KEYS = {
     "main_tower_battle": "主塔戰鬥",
     "world_boss": "世界王摸王",
     "satellite_training": "群星計畫（培育衛星）",
+    "guard_clear": "清護衛",
 }
 
 

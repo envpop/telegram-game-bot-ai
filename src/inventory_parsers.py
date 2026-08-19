@@ -245,6 +245,30 @@ def _extract_equip_limit(text):
     return int(m.group(1)) if m else None
 
 
+def carry_over_enrichment(new_detailed, old_detailed):
+    """把舊快照裡已有的 binding（天賦養成資料）依 match_key 接回新解析出的清單。
+
+    只有「綁定一覽」查詢會產生 binding 資料（annotate_special_source() 標記的
+    element/base_name/source_category 不需要靠這個，見下方呼叫端說明）。
+    「陀螺收藏」查詢本身完全不提供天賦資訊，如果存檔時不做這一步接回，
+    每次查一次陀螺收藏，之前綁定一覽合併進去的天賦資料就會被整份蓋掉
+    （這是 2026-08-15 抓到的實際 bug：save_tops_snapshot 覆蓋存檔前，
+    _handle_tops_start 沒有做這個接回，導致 element/binding 消失）。
+
+    比對邏輯跟 merge_bindings_into_tops 一致，用 match_key（正規化後的
+    完整名字段落），不用戰力，因為戰力會浮動、不適合當比對 key。
+    找不到對應舊資料的（真正新增的陀螺），binding 保持 None，這是正確的，
+    不是漏接——新陀螺本來就還沒有天賦資料。
+    """
+    old_by_key = {t["match_key"]: t for t in old_detailed if t.get("match_key")}
+
+    for top in new_detailed:
+        old = old_by_key.get(top.get("match_key"))
+        top["binding"] = old.get("binding") if old else None
+
+    return new_detailed
+
+
 def _load_special_catalog(base_dir):
     """載入全帳號共通的旋王／旋神／UR精選對照表（data/common/ 底下）。"""
     global _special_catalog_cache
@@ -441,7 +465,6 @@ def parse_bindings(text):
         "bindings": bindings,
     }
 
-
 def merge_bindings_into_tops(tops_result, bindings_result):
     """把「綁定一覽」的天賦養成資料，合併進「我的陀螺」detailed 清單裡對應的那顆。
 
@@ -469,6 +492,23 @@ def merge_bindings_into_tops(tops_result, bindings_result):
             "resonance": binding["resonance"],
         }
         matched_count += 1
+
+    # 2026-08-19 補上：綁定一覽本身就知道「哪顆⚔️出戰中」（is_active），
+    # 之前完全沒同步回 tops.json 的 status 欄位——這是「陀螺清單/status」
+    # 跟「綁定一覽/is_active」兩套出戰追蹤沒串起來的實際缺口。
+    # 只做「正面確認」：找到綁定一覽裡標出戰中的那顆才動作，同時把
+    # 「之前被標成 active、但這次不是它」的那顆改回 bench；如果這批
+    # 綁定一覽裡完全沒有任何一筆是 is_active（可能真正出戰的那顆沒綁定
+    # 過，不會出現在綁定一覽裡），就不碰 status，維持原樣，避免誤刪
+    # 正確的 active 標記。
+    active_binding = next((b for b in bindings_result["bindings"] if b.get("is_active")), None)
+    if active_binding is not None:
+        active_key = active_binding["match_key"]
+        for top in tops_result["detailed"]:
+            if top.get("match_key") == active_key:
+                top["status"] = "active"
+            elif top.get("status") == "active":
+                top["status"] = "bench"
 
     if binding_index:
         # 理論上不該發生：綁定一覽只會列出確實綁定過的陀螺，一定存在於陀螺清單裡。

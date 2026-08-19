@@ -49,9 +49,10 @@ def parse(text):
             round_pct = float(m.group("round_pct"))
             day_pct = float(m.group("day_pct"))
             continue
-        m = PREMIUM_LINE.search(line)
-        if m:
-            premium = int(m.group("premium"))
+        # 註解或刪除 PREMIUM_LINE 的比對邏輯
+        # m = PREMIUM_LINE.search(line)
+        # if m:
+        #     premium = int(m.group("premium"))
         if line.startswith("🎁"):
             reward_hint = line
 
@@ -62,7 +63,7 @@ def parse(text):
         "price": price,
         "round_pct": round_pct,
         "day_pct": day_pct,
-        "premium": premium,
+        # 不再回傳 "premium" 欄位，或者寫 "premium": None
         "reward_hint": reward_hint,
     }
 
