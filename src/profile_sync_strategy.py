@@ -44,8 +44,12 @@ my_tops.py／satellite_catalog.py／bindings.py 這三個 shape 已經解析過�
         return
 """
 
+import json
+
 import backpack_watcher
+import forge_result_parser
 import inventory_parsers
+from pathlib import Path
 
 # response_parser.py 的 _KNOWN_SHAPES 裡，三種訊息各自的 shape 名稱
 # （shape_module.__name__.rsplit(".", 1)[-1] 算出來的值，對照
@@ -57,6 +61,7 @@ _SHAPE_ACTIVE_TOP_CONFIRMATION = "active_top_confirmation"
 _SHAPE_TOP_RECORD = "top_record"
 _SHAPE_SUB_TOP_CONFIRMATION = "sub_top_confirmation"
 _SHAPE_SUB_TOP_STATUS = "sub_top_status"
+_SHAPE_FORGE_RESULT = "forge_result"
 
 
 def _no_match():
@@ -106,6 +111,9 @@ def handle_server_message(parsed, base_dir, account_id):
     if shape == _SHAPE_SUB_TOP_STATUS:
         return _handle_sub_top_status(structured, base_dir, account_id)
 
+    if shape == _SHAPE_FORGE_RESULT:
+        return _handle_forge_result(structured, base_dir, account_id)
+
     text = parsed.get("raw_text") or ""
 
     if backpack_watcher.is_backpack_message(text):
@@ -143,6 +151,7 @@ def _incomplete_suffix(structured):
 
 def _handle_tops(structured, base_dir, account_id):
     _enrich_and_save_tops(structured, base_dir, account_id)
+    _commit_matching_pending_forge(structured.get("detailed", []), base_dir, account_id)
     return _handled(
         f"[陀螺清單] 已更新，共 {structured.get('total_count')} 顆{_incomplete_suffix(structured)}"
     )
@@ -386,3 +395,99 @@ def _clear_secondary_status(base_dir, account_id):
     inventory_parsers.save_tops_snapshot(base_dir, account_id, tops_result)
     names = "、".join(t.get("name", "?") for t in cleared)
     return _handled(f"[副陀螺] ✅ 已同步：查詢結果為未裝，清掉舊記錄（{names}）")
+
+
+def _handle_forge_result(structured, base_dir, account_id):
+    """「鑄造完成」訊息進來時，先暫存候選，不直接寫進 cast_tops_catalog.json。
+
+    2026-08-19 修正（熊指出的實際風險）：不是每次鑄造都會留下（不要的
+    會被捨棄/轉點數），而且如果熊習慣用同一個自訂名字反覆嘗試，
+    立刻寫入會被「最後一次鑄造結果」覆蓋掉，可能蓋掉你實際留下的那次
+    的正確數據——不是多存垃圾資料而已，是真正的資料損毀風險。
+
+    正確做法：先存進「待確認」暫存清單（pending_forge_results.json），
+    等下次「我的陀螺」重新解析出收藏清單時，用名字+戰力+稀有度+類型
+    四項一起比對——四項都對得上，代表這隻真的被留下了，這時候才正式
+    寫進 cast_tops_catalog.json（見 _commit_matching_pending_forge()，
+    在 _handle_tops() 裡呼叫）。查不到的持續留在待確認清單，不會誤寫。
+    """
+    name = structured.get("name")
+    if not name:
+        return _no_match()
+
+    pending = _load_pending_forge(base_dir, account_id)
+    pending.append(structured)
+    _save_pending_forge(base_dir, account_id, pending)
+
+    return _handled(
+        f"[鑄造] 「{name}」出爐（{structured['element']}屬性・{structured['type']}・戰力{structured['power']}）"
+        f"——等下次查「我的陀螺」確認有留下才會記進鑄造圖鑑"
+    )
+
+
+_PENDING_FORGE_FILENAME = "pending_forge_results.json"
+
+
+def _pending_forge_path(base_dir, account_id):
+    return Path(base_dir) / "data" / str(account_id) / _PENDING_FORGE_FILENAME
+
+
+def _load_pending_forge(base_dir, account_id):
+    path = _pending_forge_path(base_dir, account_id)
+    if not path.exists():
+        return []
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _save_pending_forge(base_dir, account_id, pending):
+    path = _pending_forge_path(base_dir, account_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _commit_matching_pending_forge(detailed, base_dir, account_id):
+    """「我的陀螺」重新同步時呼叫：比對待確認清單裡的鑄造候選，跟這次
+    收藏清單裡的項目做「名字子字串 + 戰力 + 稀有度 + 類型」四項比對，
+    四項都對得上才代表真的被留下，正式寫進 cast_tops_catalog.json；
+    對不上的維持在待確認清單裡，不主動清除（可能還沒查到、或熊還在
+    考慮要不要留），不設過期時間——熊之後如果覺得清單累積太多冗餘
+    候選，再回來討論要不要加淘汰機制。
+    """
+    pending = _load_pending_forge(base_dir, account_id)
+    if not pending:
+        return
+
+    still_pending = []
+    committed_names = []
+
+    for candidate in pending:
+        matched = any(
+            candidate.get("name") in (t.get("name") or "")
+            and t.get("power") == candidate.get("power")
+            and t.get("rarity") == candidate.get("rarity")
+            and t.get("type") == candidate.get("type")
+            for t in detailed
+        )
+        if not matched:
+            still_pending.append(candidate)
+            continue
+
+        result = forge_result_parser.ForgeResult(
+            name=candidate["name"], rarity=candidate["rarity"], stars=candidate["stars"],
+            tier_label=candidate["tier_label"], type=candidate["type"], element=candidate["element"],
+            element_stage=candidate["element_stage"], atk=candidate["atk"], defense=candidate["defense"],
+            endurance=candidate["endurance"], power=candidate["power"],
+        )
+        catalog_path = Path(base_dir) / "data" / str(account_id) / "cast_tops_catalog.json"
+        catalog_path.parent.mkdir(parents=True, exist_ok=True)
+        catalog = forge_result_parser.load_cast_catalog(catalog_path)
+        catalog[result.name] = forge_result_parser._to_catalog_entry(result)
+        forge_result_parser.save_cast_catalog(catalog, catalog_path)
+        committed_names.append(candidate["name"])
+
+    _save_pending_forge(base_dir, account_id, still_pending)
+    if committed_names:
+        print(f"[鑄造圖鑑] ✅ 確認留下並記錄：{'、'.join(committed_names)}")
