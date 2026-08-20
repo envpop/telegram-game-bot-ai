@@ -17,7 +17,9 @@ from strategies.chart_correlation_strategy import ChartCorrelationStrategy
 from strategies.contract_tracking_strategy import ContractTrackingStrategy
 from message_buffer import MessageBuffer
 from inventory_display_strategy import InventoryDisplayStrategy
+import os
 
+os.system("title MOMOBot - main")
 
 router = MessageRouter()
 
