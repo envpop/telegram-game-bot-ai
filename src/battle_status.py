@@ -15,16 +15,22 @@ battle_status.py
   成「磐岩旋王・絕盾GO」；「副陀螺」查詢把「坤元鎮界・崩嶽神熊・
   摸摸撼地GO」顯示成「崩嶽神熊・摸摸撼地GO」。段數 <=2 就整串照用。
 
-用法：
-    from battle_status import build_status_data, format_status_line
+=== 2026-08-19 修正：優先序反過來，binding 要蓋過 top-level ===
+實測發現（熊提供的真實樣本，#15 森羅✦2、#24 北漠黃・翠森旋王・盤根GO）：
+top-level "element" 欄位在「旋王／特殊 UR」這類屬性隨機取得的分類上，
+是 annotate_special_source() 從 catalog 查出來的「這個名字模板可能的
+屬性」，不是「這顆實際綁定投入的屬性」——一旦玩家綁定過、
+binding.element_stage 有了真正的值，這個 catalog 猜測值卻沒有被清掉，
+留在 top-level 繼續存在。原本的優先序（先信 top-level，查不到才 fallback
+binding）在這種情況下會顯示錯誤：明明有更準的綁定資料，卻被更舊的
+catalog 猜測值蓋過去。
 
-    data = build_status_data(
-        main_top=main_row,        # 來自 talent_overview unified_view 或 tops.json
-        sub_top=sub_row,          # 來自 parse_sub_top_query() 或 unified_view
-        satellite_name=extract_active_satellite(raw_衛星圖鑑文字),
-        formation_tops=[...],     # 編隊三隻，來自 unified_view 依名字查
-    )
-    print(format_status_line(data))
+binding 是玩家實際投入的地面真相，永遠比 catalog 猜測值準——優先序
+改成「有 binding.element_stage 就優先用它，沒有才退回 top-level」。
+這個函式被 resolve_element_any() 間接呼叫，而 resolve_element_any() 又
+被 query_reactor.resolve_roster() 用在所有讀 roster 做判斷的功能上
+（query_advisor_strategy／guard_clear_strategy 等），這裡修好，全部
+下游呼叫端自動受惠，不用個別修改。
 """
 
 import re
@@ -52,15 +58,16 @@ _TYPE_ABBR = {
 def resolve_element(top: dict) -> Optional[str]:
     """
     取得陀螺的真實五行屬性。
-    優先看 top-level "element"；為 null 時 fallback 到
-    binding.element_stage.element（實測資料顯示這是常態，不是例外）。
+    優先看 binding.element_stage.element（玩家實際綁定投入的地面真相），
+    沒有才 fallback 到 top-level "element"（可能是 catalog 猜測值，
+    對「屬性隨機取得」的分類來說不一定準——見 2026-08-19 修正說明）。
     """
-    elem = top.get("element")
-    if elem:
-        return elem
     binding = top.get("binding") or {}
     stage = binding.get("element_stage") or {}
-    return stage.get("element")
+    elem = stage.get("element")
+    if elem:
+        return elem
+    return top.get("element")
 
 
 def catalog_key(top: dict) -> str:
@@ -103,8 +110,8 @@ def load_element_catalog(special_catalog: dict, cast_catalog: Optional[dict] = N
 def resolve_element_any(top: dict, catalog: Optional[dict] = None) -> Optional[str]:
     """
     屬性解析的完整優先序：
-    1. 目前實際裝備/綁定狀態（resolve_element：top-level 或 binding fallback）
-       —— 這是「現在真的長怎樣」，最準。
+    1. 目前實際裝備/綁定狀態（resolve_element：binding.element_stage 優先，
+       沒有才 fallback top-level）—— 這是「現在真的長怎樣」，最準。
     2. catalog 查表（用 catalog_key，優先 base_name）—— 給還沒綁定/沒點天賦、
        resolve_element 拿不到值的陀螺當備援。
     catalog 沒傳就只做第 1 步，行為跟舊版 resolve_element 一致，不影響既有呼叫端。
@@ -171,11 +178,10 @@ def extract_active_satellite(raw_text: str) -> Optional[str]:
 # talent_overview 重新查一次天賦）。遊戲在這裡自己標了顏色（此樣本 🟡=土），
 # 先原樣保留在 game_color，不做二次轉換，避免跟我方自訂配色打架；
 # 未來蒐集到其他屬性的顏色樣本再統一比對、決定要不要改用遊戲配色。
-# 「目前沒有副陀螺」的回覆格式尚無真實樣本，_SUB_TOP_UNSET_RE 未驗證。
 _SUB_TOP_QUERY_RE = re.compile(
     r"🌗\s*副陀螺[：:]\s*(?P<name>.+?)(?:（|\()\s*副屬性\s*(?P<game_color>\S)?(?P<element>[火水木金土])屬性"
 )
-_SUB_TOP_UNSET_RE = re.compile(r"(尚未設定|沒有設定|卸下)")
+_SUB_TOP_UNSET_RE = re.compile(r"(尚未設定|沒有設定|卸下|還沒裝)")
 
 
 def parse_sub_top_query(raw_text: str) -> Optional[dict]:
@@ -184,6 +190,10 @@ def parse_sub_top_query(raw_text: str) -> Optional[dict]:
     回傳 {"name": 短稱, "element": 五行, "game_color": 遊戲標的顏色emoji}
     或 None（沒設定副陀螺，或格式未命中）。
     不含 type——這則訊息沒給類型，要靠 name 回頭比對 unified_view 補上。
+
+    2026-08-19 補充：這個 shape 現在有 parsing/response_shapes/sub_top_status.py
+    正式接手（含真實樣本驗證），這裡維持不變只是避免破壞舊呼叫端，
+    "還沒裝" 也補進 unset pattern（跟真實樣本一致）。
     """
     m = _SUB_TOP_QUERY_RE.search(raw_text)
     if m:
@@ -203,10 +213,11 @@ def top_status_data(top: dict, catalog: Optional[dict] = None) -> dict:
     直接重複使用，不必再解析一次原始資料。
 
     相容性說明：這個函式吃三種來源都不用改寫——
-    1. tops.json 原始格式：element 常為 top-level null，
-       resolve_element_any() 會 fallback 到 binding.element_stage.element。
+    1. tops.json 原始格式：binding.element_stage 優先，沒有才 fallback
+       top-level（見 2026-08-19 修正，binding 是地面真相）。
     2. talent_overview.build_unified_view() 的 unified_view row：
-       element 已經是攤平後的 top-level 值，第一步就直接命中。
+       element 已經是攤平後的 top-level 值，通常沒有 binding 欄位，
+       第二步就直接命中。
     3. 前兩者都拿不到值時（例如未綁定、天賦未點的 UR），
        傳入 catalog（load_element_catalog() 的結果）就會再用短稱查
        special_tops_catalog.json / cast_tops_catalog.json 當備援；
@@ -313,29 +324,24 @@ def build_status_line(
 
 
 if __name__ == "__main__":
-    # 用熊提供的真實樣本快速驗證
-    sample_main = {
-        "name": "磐岩旋王・絕盾GO",
+    # 用熊提供的真實樣本快速驗證：#15 森羅✦2（top-level=土，binding=金），
+    # 修正後應該回傳「金」，不是「土」
+    sample_15 = {
+        "name": "☆黑獄・森羅✦2",
         "type": "防禦型",
-        "element": None,
-        "binding": {"element_stage": {"element": "土", "stage": 3}},
+        "element": "土",  # catalog 猜測值（錯的）
+        "binding": {"element_stage": {"element": "金", "stage": 3}},  # 真正的
     }
-    sample_formation = [
-        {
-            "name": "碧蒼裂空・蒼穹神熊・摸摸盤龍GO",
-            "type": "持久型",
-            "element": "木",
-            "binding": {"element_stage": {"element": "木", "stage": 3}},
-        },
-        {
-            "name": "龍淵・千重浪・蒼海旋王・不滅GO",
-            "type": "持久型",
-            "element": None,
-            "binding": {"element_stage": {"element": "土", "stage": 3}},
-        },
-    ]
-    print(build_status_line(
-        main_top=sample_main,
-        satellite_name="轟鳴皇",
-        formation_tops=sample_formation,
-    ))
+    print("修正驗證 #15 森羅✦2：", resolve_element(sample_15), "（預期：金）")
+
+    sample_24 = {
+        "name": "北漠黃・翠森旋王・盤根GO",
+        "type": "持久型",
+        "element": "木",  # catalog 猜測值（錯的）
+        "binding": {"element_stage": {"element": "火", "stage": 1}},  # 真正的
+    }
+    print("修正驗證 #24 翠森旋王：", resolve_element(sample_24), "（預期：火）")
+
+    # 沒有 binding 資料時，維持 fallback 到 top-level（不影響既有行為）
+    sample_no_binding = {"name": "測試", "type": "攻擊型", "element": "水", "binding": None}
+    print("無 binding 時 fallback：", resolve_element(sample_no_binding), "（預期：水）")

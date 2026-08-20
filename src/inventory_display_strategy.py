@@ -7,14 +7,20 @@ inventory_display_strategy.py
 cast_tops_catalog.json），shape 層（parsing/response_shapes/my_tops.py）
 拿不到這些，只能在這裡（有 base_dir/account_id 可用的 pipeline 後段）做。
 
-=== 查詢順序（熊確認）===
-    1. tops.json（帳號存檔，已經是「綁定一覽」合併回來的結果，
-       每筆 detailed 都可能帶 element 欄位）── 優先查這裡
+=== 查詢順序（熊確認，2026-08-19 修正過優先序）===
+    1. tops.json（帳號存檔，已經是「綁定一覽」合併回來的結果）── 優先查這裡，
+       實際判斷交給 battle_status.resolve_element()：binding.element_stage
+       優先於 top-level element（binding 是玩家實際投入的地面真相，比
+       catalog 猜測值準——見 battle_status.py 的 2026-08-19 修正說明，
+       實測 #15 森羅✦2／#24 翠森旋王・盤根GO 兩顆證實 top-level 有時是
+       catalog 的錯誤猜測值，不能無條件信任）。這裡不再重複寫一份優先序
+       邏輯，直接呼叫 battle_status.resolve_element()，只在這一個地方
+       修就全部同步套用。
     2. special_tops_catalog.json / cast_tops_catalog.json（旋王/旋神/
        UR精選/鑄造陀螺對照表，用 inventory_parsers.annotate_special_source()）
        ── 上面查不到才 fallback 到這裡
-    3. 查不到就是沒有，不再往下猜（不用 binding 反查、不用其他 fallback
-       鏈——熊說「這裡如果找不到就是沒有了」）
+    3. 查不到就是沒有，不再往下猜（不用其他 fallback 鏈——熊說「這裡
+       如果找不到就是沒有了」）
 
 === 比對 key：match_key，不是 index ===
     index 是「依戰力排序」的名次，兩次查詢之間如果有陀螺強化/新增，
@@ -40,6 +46,7 @@ import logging
 from pathlib import Path
 
 from inventory_parsers import annotate_special_source
+from battle_status import resolve_element
 
 logger = logging.getLogger(__name__)
 
@@ -64,18 +71,8 @@ class InventoryDisplayStrategy:
 
     # ---------- 步驟1：tops.json（帳號存檔，match_key 比對） ----------
     def _load_tops_element_by_matchkey(self, account_id):
-        """
-        element 的查詢優先序（沿用專案既有的 UR/神階屬性 fallback 規則，
-        見 memory：「top-level element 欄位經常是 null，要 fallback 到
-        binding.element_stage.element」）：
-            1. top-level 的 element 欄位
-            2. binding.element_stage.element
-                （旋王／UR精選這類屬性隨機取得的分類，模板本身不記錄
-                固定屬性，只有實際綁定過後 binding 資料才知道抽到哪個
-                五行——這一步漏掉就是這次熊回報「tops.json 明明有資料
-                卻沒接上」的根因）
-            3. 兩者都沒有 → 這顆真的沒有可用的屬性資料，跳過不處理
-        """
+        """優先序判斷交給 battle_status.resolve_element()（binding 優先，
+        top-level 次之），這裡只負責讀檔跟用 match_key 建索引。"""
         tops_path = self.base_dir / "data" / str(account_id) / "tops.json"
         if not tops_path.exists():
             return {}
@@ -91,13 +88,7 @@ class InventoryDisplayStrategy:
             match_key = t.get("match_key")
             if not match_key:
                 continue
-
-            element = t.get("element")
-            if not element:
-                binding = t.get("binding") or {}
-                element_stage = binding.get("element_stage") or {}
-                element = element_stage.get("element")
-
+            element = resolve_element(t)
             if element:
                 result[match_key] = element
 
@@ -116,7 +107,7 @@ class InventoryDisplayStrategy:
         if not account_id:
             return None
 
-        # 步驟1：先查 tops.json（match_key 比對）
+        # 步驟1：先查 tops.json（match_key 比對，binding 優先於 top-level）
         tops_element_by_key = self._load_tops_element_by_matchkey(account_id)
 
         working = [dict(t) for t in detailed]  # 複製，不動 parsed['structured'] 本身
@@ -168,28 +159,25 @@ if __name__ == "__main__":
     common_dir.mkdir(parents=True, exist_ok=True)
     account_dir.mkdir(parents=True, exist_ok=True)
 
-    # 模擬 tops.json 已經有一筆從綁定一覽合併回來的 element
+    # 模擬 tops.json：#15 情境重現——top-level=土（catalog 猜測值，錯的），
+    # binding.element_stage=金（真正的），修正後應該顯示「金」
     (account_dir / "tops.json").write_text(
         json.dumps({
             "detailed": [
-                {"match_key": "☆元氣之始・太初神熊・摸摸原初GO+17🌀回歸綁定IV", "element": "木"},
+                {"match_key": "☆黑獄・森羅✦2+18🛡️護盾綁定III", "element": "土",
+                 "binding": {"element_stage": {"element": "金", "stage": 3}}},
             ]
         }, ensure_ascii=False),
         encoding="utf-8",
     )
-    # 第二顆只能靠 cast_tops_catalog 查到
     (common_dir / "special_tops_catalog.json").write_text("{}", encoding="utf-8")
-    (account_dir / "cast_tops_catalog.json").write_text(
-        json.dumps({"🧰": {"element": "金"}}, ensure_ascii=False), encoding="utf-8"
-    )
+    (account_dir / "cast_tops_catalog.json").write_text("{}", encoding="utf-8")
 
     strategy = InventoryDisplayStrategy(base_dir=test_base, account_id_getter=lambda: "envpop")
 
-    sample_display = """🧰 你的陀螺收藏（共 131 顆）
+    sample_display = """🧰 你的陀螺收藏（共 38 顆）
 ──────────────
-1. ✦✦✦✦✦🔱 ☆元氣之始・太初神熊・摸摸原初GO +17🌀回歸綁定IV｜神・平衡型・戰力 670
-31. ✦✦✦✦ 🧰｜UR・持久型・戰力 212
-32. ✦✦✦✦ 星碎｜UR・持久型・戰力 212"""
+15. ✦✦✦✦ ☆黑獄・森羅✦2 +18🛡️護盾綁定III｜UR・防禦型・戰力 415"""
 
     parsed = {
         "shape": "my_tops",
@@ -197,13 +185,9 @@ if __name__ == "__main__":
         "structured": {
             "raw_text": sample_display,
             "detailed": [
-                {"index": 1, "name": "☆元氣之始・太初神熊・摸摸原初GO",
-                 "match_key": "☆元氣之始・太初神熊・摸摸原初GO+17🌀回歸綁定IV",
-                 "rarity": "神", "type": "平衡型", "power": 670},
-                {"index": 31, "name": "🧰", "match_key": "🧰",
-                 "rarity": "UR", "type": "持久型", "power": 212},
-                {"index": 32, "name": "星碎", "match_key": "星碎",
-                 "rarity": "UR", "type": "持久型", "power": 212},
+                {"index": 15, "name": "☆黑獄・森羅✦2",
+                 "match_key": "☆黑獄・森羅✦2+18🛡️護盾綁定III",
+                 "rarity": "UR", "type": "防禦型", "power": 415},
             ],
         },
     }
@@ -211,6 +195,6 @@ if __name__ == "__main__":
     result = strategy.observe(parsed, {})
     print(result["display_text"] if result else "（無變化）")
     print()
-    print("預期：#1 從 tops.json 查到「木」，#31 從 cast_tops_catalog 查到「金」，#32 兩邊都查不到維持原樣")
+    print("預期：顯示「金屬性」（binding 的真實值），不是「土屬性」（catalog 的錯誤舊值）")
 
     shutil.rmtree(test_base)
