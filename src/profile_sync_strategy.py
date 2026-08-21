@@ -183,10 +183,20 @@ def _enrich_and_save_tops(result, base_dir, account_id):
 
 
 def _handle_satellite(structured, base_dir, account_id):
-    inventory_parsers.save_satellites_snapshot(base_dir, account_id, structured)
+    active_name = _extract_active_satellite_name(structured.get("satellites", []))
+    to_save = dict(structured)
+    to_save["active_satellite_name"] = active_name
+    inventory_parsers.save_satellites_snapshot(base_dir, account_id, to_save)
     return _handled(
         f"[衛星清單] 已更新，共 {structured.get('total_count')} 顆{_incomplete_suffix(structured)}"
     )
+
+
+def _extract_active_satellite_name(satellites):
+    """衛星圖鑑解析結果裡，每隻衛星本來就有 is_active 欄位（跟陀螺的
+    ⭐/🌗 marker 是同一種設計），這裡只是把「目前裝備哪隻」單獨存出來，
+    不重新解析原文——這個欄位一直都有，只是之前沒人把它持久化。"""
+    return next((s.get("name") for s in satellites if s.get("is_active")), None)
 
 
 def _handle_bindings(bindings_result, base_dir, account_id):

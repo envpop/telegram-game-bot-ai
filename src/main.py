@@ -17,9 +17,10 @@ from strategies.chart_correlation_strategy import ChartCorrelationStrategy
 from strategies.contract_tracking_strategy import ContractTrackingStrategy
 from message_buffer import MessageBuffer
 from inventory_display_strategy import InventoryDisplayStrategy
-import os
+from battle_status_line_strategy import BattleStatusLineStrategy
 
-os.system("title MOMOBot - main")
+import os
+os.system("title MOMOBearBot - main")
 
 router = MessageRouter()
 
@@ -67,7 +68,7 @@ async def terminal_input_loop():
             continue
 
         if text.startswith("/delay"):
-            # 按鈕點擊前的反應延遲，套用在所有三套自動系統共用的
+            # 按鈕點擊前的反應延遲，套用在所有自動系統共用的
             # executor.click_button()，不用各自處理。跟 /click、/sched、
             # /auto 一樣是終端機輸入的即時指令。
             # 用法：
@@ -278,6 +279,10 @@ async def run():
         account_id_getter=_get_account_id,   # main.py 已經有這個函式，直接沿用
     )
     STRATEGY_PIPELINE = StrategyPipeline([market_tracking, contract_tracking, query_advisor, inventory_display])
+    battle_status_line = BattleStatusLineStrategy(
+        account_data_dir=BASE_DIR / "data" / str(ACCOUNT_ID),
+    )
+    STRATEGY_PIPELINE = StrategyPipeline([market_tracking, contract_tracking, query_advisor, inventory_display, battle_status_line])    
     global CHART_CORRELATION
     CHART_CORRELATION = ChartCorrelationStrategy(
         common_data_dir=BASE_DIR / "data" / "common",
