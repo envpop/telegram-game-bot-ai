@@ -48,6 +48,33 @@ class MarketTrackingStrategy:
         self.enable_pulse = enable_pulse
 
         self.snapshot = self._load_snapshot()
+        self.name_map_file = self.common_data_dir / "name_map.json"
+        self.name_map = self._load_name_map()  # {全名: 短稱}
+
+    def _load_name_map(self):
+        if self.name_map_file.exists():
+            with self.name_map_file.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        return {}
+
+    def _save_name_map(self):
+        with self.name_map_file.open("w", encoding="utf-8") as f:
+            json.dump(self.name_map, f, ensure_ascii=False, indent=2)
+
+    def _remember_name_mapping(self, short_name, full_name):
+        if self.name_map.get(full_name) != short_name:
+            self.name_map[full_name] = short_name
+            self._save_name_map()
+
+    def _resolve_short_name(self, item_label):
+        """item_label 是「emoji+全名」黏在一起的原始字串（例如
+        "🛰️群星通訊"），從已知的全名對照表裡找出對應的短稱。
+        找不到就回傳 None，呼叫端要自己決定放棄還是怎麼處理，
+        不要硬猜一個可能是錯的短稱去污染 snapshot。"""
+        for full_name, short_name in self.name_map.items():
+            if full_name in item_label:
+                return short_name
+        return None
 
     # ---------- 持久化 ----------
     def _load_snapshot(self):
@@ -84,7 +111,15 @@ class MarketTrackingStrategy:
             return {"display_text": enriched} if enriched else None
 
         if shape == "market_quote":
+            structured = parsed.get("structured") or {}
+            name, full_name = structured.get("name"), structured.get("full_name")
+            if name and full_name:
+                self._remember_name_mapping(name, full_name)
             return None  # 這則本身就有完整的現價/漲跌資訊，不重複附加脈動提示
+
+        if shape == "trade_confirmation":
+            self._persist_trade(parsed, record)
+            return None  # 交易確認本身內容就很清楚，不需要額外附加東西
 
         if not self.enable_pulse:
             return None
@@ -159,6 +194,7 @@ class MarketTrackingStrategy:
                 "round_pct": it["round_pct"],
                 "day_pct": it["day_pct"],
             })
+            self._remember_name_mapping(it["name"], it["full_name"])
             # 用 existing.update 而不是整個覆蓋：如果之前商契已經記過
             # cost/pct_vs_cost（你的持倉資訊），這裡不要把它洗掉，
             # 只更新市集這邊真正知道的欄位（價格、本盤、今日）。
@@ -237,3 +273,45 @@ class MarketTrackingStrategy:
             return None  # 全部都是第一次看到、沒有比較基準，先不顯示
 
         return "📈 市場｜" + " ".join(parts) + "（依最近一次商契／市集查詢）"
+
+    def _persist_trade(self, parsed, record):
+        """入資/撤資確認是即時、權威的交易結果，比商契/市集/行情的
+        「查詢當下快照」更準——直接覆蓋 snapshot 裡的股數/均價，
+        不用等下一次剛好查商契才發現變了。"""
+        structured = parsed.get("structured") or {}
+        item_label = structured.get("item_label")
+        short_name = self._resolve_short_name(item_label) if item_label else None
+
+        if short_name is None:
+            print(f"[market_tracking_strategy] 交易確認「{item_label}」找不到對應的短稱，"
+                  f"可能是還沒查過市集/行情看過這個商品的全名，這筆交易先不更新 snapshot")
+            return
+
+        recorded_at = record.get("recorded_at") or record.get("message_date")
+
+        existing = self.snapshot.get(short_name, {})
+        existing["shares"] = structured.get("shares_after")
+        existing["last_seen"] = recorded_at
+        # 只有入資才更新均價——撤資不影響剩餘股數的均價，這裡沒有值
+        # 可以更新（avg_cost_after 是 None），維持 snapshot 裡原本記的均價。
+        if structured.get("avg_cost_after") is not None:
+            existing["cost"] = structured["avg_cost_after"]
+        self.snapshot[short_name] = existing
+        self._save_snapshot()
+
+        # 個人交易紀錄，跟商契的持倉快照分開存，這筆是「有交易發生」
+        # 的明確事件，不是定期查詢的快照
+        self._append_jsonl(self.portfolio_history_file, {
+            "recorded_at": recorded_at,
+            "message_id": record.get("message_id"),
+            "event": "trade",
+            "action": structured.get("action"),
+            "name": short_name,
+            "traded_shares": structured.get("traded_shares"),
+            "trade_price": structured.get("trade_price"),
+            "net_change": structured.get("net_change"),
+            "shares_after": structured.get("shares_after"),
+            "avg_cost_after": structured.get("avg_cost_after"),   # 撤資是 None
+            "realized_pnl": structured.get("realized_pnl"),       # 入資是 None
+            "remaining_points": structured.get("remaining_points"),
+        })
