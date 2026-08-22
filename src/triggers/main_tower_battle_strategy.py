@@ -49,6 +49,13 @@ v1（HP 比例三段式）在兩場實戰都輸了——王的單回合爆發傷
 交給熊自己手動選。由 action_dispatcher.py 在呼叫 decide_action 之前檢查。
 """
 
+from triggers import actions
+
+# 自動點擊開關的 system_key，跟世界王、群星計畫共用同一套 auto_toggle 機制
+# （見檔頭「自動點擊開關」說明）。搬移前這個字串是直接寫死在
+# action_dispatcher.py 裡的字面值，現在跟其他觸發模組一樣定義成模組常數。
+SYSTEM_KEY = "main_tower_battle"
+
 # HP 比例低於這個值，判定「生死交關」——不管防禦/進攻哪個階段，優先強攻，
 # 靠吸血拚一口氣，因為攻擊型陀螺穩守減傷有限，硬守也擋不住。
 CRITICAL_HP_RATIO = 0.15
@@ -173,3 +180,34 @@ def _find_button_by_text_contains(buttons, text_hint):
         if text_hint in (b.get("text") or ""):
             return b
     return None
+
+
+def decide(ctx):
+    """action_dispatcher.py 的統一觸發清單入口，取代原本 _handle_main_tower_battle()。
+    判斷順序（先看有沒有按鈕、再看 shape、再看開關）跟原本完全一致。"""
+    if not ctx.buttons:
+        return None
+    if ctx.shape != "main_tower_battle_prompt":
+        return None
+
+    if not ctx.is_enabled(SYSTEM_KEY):
+        return actions.none(
+            log="[主塔戰鬥] 🔕 自動點擊已關閉（終端機輸入 /auto 查看開關狀態），"
+                "已收到訊息但不會自動點擊，請自行手動選擇",
+            stop=True,
+        )
+
+    action = decide_action(ctx.structured, ctx.buttons)
+    if action:
+        return actions.click_button(
+            chat_id=ctx.chat_id, message_id=ctx.message_id,
+            data=action["data"], button_text=action["button_text"], reason=action["reason"],
+        )
+
+    # 判斷不出來（例如關鍵數值解析失敗、或必殺技按鈕沒對到），印出提醒但
+    # 仍然 stop=True——已確認是主塔戰鬥訊息，不用再往下讓其他 trigger 誤判，
+    # 交給熊自己手動選（寧可少點一次，也不要亂點）。
+    return actions.none(
+        log=f"[主塔戰鬥] ⚠️ 策略無法判斷要選哪個戰術按鈕：{ctx.text[:40]}...",
+        stop=True,
+    )

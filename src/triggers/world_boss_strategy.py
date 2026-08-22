@@ -28,10 +28,14 @@ world_boss_strategy.py —— 世界王討伐時機判斷（決策層）
         run_at = datetime.now(LOCAL_TZ) + timedelta(seconds=action["delay_seconds"])
         asyncio.create_task(executor.schedule_at(run_at, action["command"], chat_id=action["chat_id"], reason=action["reason"]))
 
-用法（「世界王」查詢回覆，不同 chat）：
-    from world_boss_strategy import decide_action_from_status_query
-    action = decide_action_from_status_query(record["text"], catalog, BASE_DIR, ACCOUNT_ID)
-    # 回傳格式跟 decide_action 一樣，mode 只會是 "now" 或 None（查詢當下就能判斷王是否還活著，不需要排程）
+用法（「世界王」查詢回覆，不同 chat；新版走統一觸發清單，見檔尾 decide(ctx)）：
+    from triggers.world_boss_strategy import decide
+    action = decide(ctx)  # ctx 是 triggers.context.TriggerContext
+
+decide_action_from_status_query() 本身保留、邏輯不變，decide(ctx) 只是把
+「這則訊息歸不歸我管」的判斷（開關狀態）跟轉成 Action 這兩件事包在外層。
+公告頻道那一路的 decide_action() 維持原本 main.py 的 announcement_strategies
+清單用法，不受這次調整影響。
 """
 
 import json
@@ -39,6 +43,7 @@ import re
 from pathlib import Path
 
 import world_boss_progress
+from triggers import actions
 
 # 給 action_dispatcher.py 的公告策略迴圈用：迴圈用 getattr(strategy,
 # "SYSTEM_KEY", None) 通用地查 auto_toggle 開關狀態，不用在 dispatcher
@@ -158,3 +163,19 @@ def decide_action_from_status_query(text, catalog, base_dir, account_id):
         "chat_id": query["chat_id"],  # 討伐指令固定送去摸熊神社(bot 私訊)，公告頻道沒有發言權限
         "reason": f"查詢「世界王」時發現「{name}」今天還沒打過、王還活著，補一刀",
     }
+
+
+def decide(ctx):
+    """action_dispatcher.py 統一觸發清單入口（server 訊息這一路，第三道保險），
+    取代原本的 _handle_world_boss_status_query()；跟公告頻道那一路的
+    decide_action() 是分開的兩個函式，維持原本檔頭說明的分工，只是這裡
+    多包一層轉成 Action。開關關閉時 stop=False（不吃掉訊息，放行給其他
+    trigger），跟原本行為一致。"""
+    if not ctx.is_enabled(SYSTEM_KEY):
+        return None
+
+    catalog = load_catalog(ctx.base_dir)
+    action = decide_action_from_status_query(ctx.text, catalog, ctx.base_dir, ctx.account_id)
+    if action["mode"] == "now":
+        return actions.send_now(action["command"], chat_id=action["chat_id"], reason=action["reason"])
+    return None

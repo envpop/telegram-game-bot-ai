@@ -16,50 +16,29 @@ satellite_training_strategy.py —— 群星計畫（衛星培育）決策層
   - 隨機岔路事件（神秘旋核／魔鬼特訓／修行岔路等）：選哪個都行，
     目前預設固定選第一個選項（c0），純粹為了讓流程能繼續
 
-用法：
-    from satellite_training_strategy import decide_action
+用法（新版，見檔尾 decide(ctx)）：
+    from triggers.satellite_training_strategy import decide
+    action = decide(ctx)  # ctx 是 triggers.context.TriggerContext
 
-    action = decide_action(record["text"], record["buttons"])
-    if action:
-        await click_button(chat_id, message_id, action["data"], action["button_text"], reason=action["reason"])
-
-另外也收著「剛打了培育指令，等待 BOT 第一則回覆」這個狀態（mark_awaiting_reply /
-consume_awaiting_reply）。觸發點是使用者指令、消費點是 BOT 回覆，兩個不同來源，
-但都屬於「培育」同一件事，所以狀態跟判斷邏輯放在同一支檔案，main.py 不自己存狀態。
+「剛打了培育指令，等待 BOT 第一則回覆」這個狀態，觸發點（使用者打「培育」
+指令）跟消費點（BOT 回覆時判斷新建/續練）是兩個不同來源的事件，現在統一
+透過 triggers/runtime_state.py 存取（key="awaiting_training_reply"），
+不再由這支檔案自己管理狀態——搬移前這裡曾經有 mark_awaiting_reply /
+consume_awaiting_reply 兩個函式，但實際上 action_dispatcher.py 一直是
+自己另外用一個 dict 記這個旗標，沒有呼叫這兩個函式，等於是重複的兩套
+機制、其中一套是死碼，這次整理順便拿掉，只留 runtime_state.py 這一套。
 """
 
 import json
 import re
 from pathlib import Path
 
+from triggers import actions
+
 _CATALOG_CACHE = None
 
-
-# ============================================================
-# 「剛打了培育指令，等待 BOT 第一則回覆」狀態
-# ============================================================
-# 這個狀態的觸發點（使用者打「培育」指令）跟消費點（BOT 回覆時判斷新建/續練）
-# 是兩個不同來源的事件（一個是 user 指令、一個是 server 回應），但都屬於
-# 「培育」這一件事，所以狀態本身也收在這支檔案裡管理，main.py 只負責在
-# 對的時間點呼叫，不自己存狀態。
-#
-# key 是 chat_id：同一個 chat 同時只會有一輪培育在等回覆。
-_awaiting_reply_by_chat = {}
-
-
-def mark_awaiting_reply(chat_id):
-    """使用者剛打了「培育」指令，記下來等下一則 BOT 回覆時判斷新建/續練。"""
-    _awaiting_reply_by_chat[chat_id] = True
-
-
-def consume_awaiting_reply(chat_id):
-    """取出並清掉這個 chat 的等待旗標（不論結果是 True 或 False 都會清掉）。
-
-    呼叫端應該對「每一則」server/announcement 訊息都呼叫一次，不管訊息內容
-    是不是培育相關——旗標只代表「等到下一則回覆了沒」，不是「是不是培育
-    訊息」，這樣才不會因為旗標卡住殘留到很久之後某次不相關的訊息才誤判。
-    """
-    return _awaiting_reply_by_chat.pop(chat_id, False)
+# 自動點擊開關的 system_key，跟主塔戰鬥、世界王共用同一套 auto_toggle 機制。
+SYSTEM_KEY = "satellite_training"
 
 
 def _catalog_path(base_dir):
@@ -203,3 +182,43 @@ def _find_button_by_text(buttons, text):
         if b.get("text") == text:
             return b
     return None
+
+
+def decide(ctx):
+    """action_dispatcher.py 的統一觸發清單入口，取代原本 _handle_satellite_buttons()。
+    判斷順序（先看有沒有按鈕、再看開關、再看是否剛好在等培育回覆）跟原本
+    完全一致，包括開關關閉時 stop=False（放行給 reaction_rules 兜底）這個
+    跟主塔戰鬥不同的行為——這是原本就有的差異，不是這次整理造成的不一致，
+    先照舊保留，之後熊想統一成同一種行為再說。"""
+    if not ctx.buttons:
+        return None
+
+    if not ctx.is_enabled(SYSTEM_KEY):
+        return actions.none(
+            log="[群星計畫] 🔕 自動點擊已關閉（終端機輸入 /auto 查看開關狀態），"
+                "已收到訊息但不會自動點擊，請自行手動選擇",
+            stop=False,
+        )
+
+    if ctx.awaiting_training_reply:
+        catalog = load_catalog(ctx.base_dir)
+        session_kind = classify_session_start(ctx.text, catalog)
+        if session_kind == "new":
+            print("[群星計畫] 🆕 開始新一輪培育（新建衛星）")
+        elif session_kind == "continuing":
+            print("[群星計畫] ▶️ 續練進行中的衛星")
+
+    action = decide_action(ctx.text, ctx.buttons, ctx.base_dir)
+    if action:
+        return actions.click_button(
+            chat_id=ctx.chat_id, message_id=ctx.message_id,
+            data=action["data"], button_text=action["button_text"], reason=action["reason"],
+        )
+
+    # 判斷不出來：可能真的是衛星培育但策略沒把握，也可能根本不是衛星培育
+    # （例如戰鬥選擇戰術的按鈕）。stop=False，放行讓 reaction_rules 有機會
+    # 接手（例如戰鬥用 click: 規則自動應戰）。
+    return actions.none(
+        log=f"[群星計畫] ⚠️ 策略無法判斷要選哪個按鈕，若非群星計畫訊息可忽略：{ctx.text[:40]}...",
+        stop=False,
+    )

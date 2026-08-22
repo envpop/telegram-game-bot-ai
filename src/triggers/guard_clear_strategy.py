@@ -43,6 +43,8 @@ main_tower_battle_strategy.decide_action()，只是傳更保守的門檻參數
 """
 
 from query_reactor import recommend_for_guard_target
+from triggers import actions
+from triggers import main_tower_battle_strategy
 
 SYSTEM_KEY = "guard_clear"
 
@@ -126,3 +128,57 @@ def decide_after_outcome(parsed):
         }
 
     return {"mode": "none", "commands": [], "reason": "結果訊息沒有剩餘數量資訊，無法判斷是否繼續，交給你手動查看"}
+
+
+def decide(ctx):
+    """action_dispatcher.py 的統一觸發清單入口，取代原本 _handle_guard_clear()。
+    三種 shape 的判斷邏輯本身沒有變，只是把「這則訊息歸不歸我管」的判斷
+    搬進來，跟原本散在 action_dispatcher.py 裡的行為完全一致（包括每個
+    分支各自的 stop 語意）。"""
+    shape = ctx.shape
+    if shape not in ("guard_status", "guard_clear_outcome", "guard_battle_prompt"):
+        return None
+
+    if not ctx.is_enabled(SYSTEM_KEY):
+        return None  # 關閉時不吃掉訊息，維持原行為（放行給其他 trigger／reaction_rules）
+
+    if shape == "guard_status":
+        action = decide_action(ctx.parsed, ctx.roster)
+        if action is None:
+            return None  # 不是「還有護衛」的查詢結果，交給其他 trigger
+        if action["mode"] == "none":
+            return actions.none(log=f"[清護衛] {action['reason']}")
+        return actions.send_sequence(
+            action["commands"], interval_seconds=2, reason=action["reason"],
+            log=f"[清護衛] ✅ {action['reason']}",
+        )
+
+    if shape == "guard_clear_outcome":
+        action = decide_after_outcome(ctx.parsed)
+        if action["mode"] == "none":
+            return actions.none(log=f"[清護衛] {action['reason']}")
+        return actions.send_now(
+            action["commands"][0], reason=action["reason"],
+            log=f"[清護衛] 🔁 {action['reason']}",
+        )
+
+    # shape == "guard_battle_prompt"：沒一擊拆掉，進入按鈕戰鬥，沿用主塔
+    # 戰鬥的決策邏輯，但門檻更保守（見檔頭 GUARD_CRITICAL_HP_RATIO 等說明）。
+    if not ctx.buttons:
+        return None  # 原行為：沒按鈕就不吃掉，放行
+
+    action = main_tower_battle_strategy.decide_action(
+        ctx.structured, ctx.buttons,
+        critical_hp_ratio=GUARD_CRITICAL_HP_RATIO,
+        shield_phase_threshold=GUARD_SHIELD_PHASE_THRESHOLD,
+    )
+    if action:
+        return actions.click_button(
+            chat_id=ctx.chat_id, message_id=ctx.message_id,
+            data=action["data"], button_text=action["button_text"], reason=action["reason"],
+        )
+
+    return actions.none(
+        log=f"[護衛戰鬥] ⚠️ 策略無法判斷要選哪個戰術按鈕：{ctx.text[:40]}...",
+        stop=True,
+    )

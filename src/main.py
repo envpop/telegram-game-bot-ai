@@ -5,19 +5,22 @@ import auto_toggle
 import monitor
 import executor
 import scheduler
-import world_boss_strategy
+from triggers import world_boss_strategy
+from triggers import main_tower_battle_strategy
+from triggers import guard_clear_strategy
+from triggers import satellite_training_strategy
 from parser import MessageRouter
 from log_maintenance import run_maintenance
 from display_formatter import format_display_line
 from action_dispatcher import ActionDispatcher
 from strategy_pipeline import StrategyPipeline
-from query_advisor_strategy import QueryAdvisorStrategy
+from strategies.query_advisor_strategy import QueryAdvisorStrategy
 from strategies.market_tracking_strategy import MarketTrackingStrategy
 from strategies.chart_correlation_strategy import ChartCorrelationStrategy
 from strategies.contract_tracking_strategy import ContractTrackingStrategy
 from message_buffer import MessageBuffer
-from inventory_display_strategy import InventoryDisplayStrategy
-from battle_status_line_strategy import BattleStatusLineStrategy
+from strategies.inventory_display_strategy import InventoryDisplayStrategy
+from strategies.battle_status_line_strategy import BattleStatusLineStrategy
 
 import os
 os.system("title MOMOBearBot - main")
@@ -47,11 +50,23 @@ def _get_account_id():
 
 # 公告頻道（摸摸熊戰鬥陀螺）的觸發規則清單。之後新增其他公告種類，
 # 照 world_boss_strategy.py 的模式寫一個新模組，加進這個清單就好。
+#
+# server_triggers：server 訊息的觸發清單，依序嘗試，第一個判斷出動作的
+# 就處理掉（見 action_dispatcher.py 的說明）。順序跟搬移前 dispatch() 裡
+# 原本的 if/elif 順序一致：世界王查詢保險 → 主塔戰鬥 → 清護衛 → 群星計畫。
+# 之後新增觸發模組，照 triggers/ 底下任一支的 decide(ctx) 介面寫一支、
+# 加進這個清單就好，不用再改 action_dispatcher.py。
 dispatcher = ActionDispatcher(
     base_dir=BASE_DIR,
     rules_file=REACTION_RULES_FILE,
     account_id_getter=_get_account_id,
     announcement_strategies=[world_boss_strategy],
+    server_triggers=[
+        world_boss_strategy,
+        main_tower_battle_strategy,
+        guard_clear_strategy,
+        satellite_training_strategy,
+    ],
 )
 
 

@@ -2,14 +2,12 @@
 
 import auto_toggle
 import executor
-import guard_clear_strategy
-import main_tower_battle_strategy
 import profile_sync_strategy
-import satellite_training_strategy
 import scheduler
-import world_boss_strategy
 from reaction_rules import ReactionRuleEngine
-from roster_loader import load_roster
+from triggers import actions
+from triggers.context import TriggerContext
+from triggers import runtime_state
 
 
 class ActionDispatcher:
@@ -18,18 +16,25 @@ class ActionDispatcher:
     announcement_strategies：公告頻道的判斷模組清單，每個模組要提供
         load_catalog(base_dir) -> dict
         decide_action(text, catalog, base_dir, account_id) -> {"mode", ...}
-    之後要新增新的公告種類，照這個介面寫一支新模組、把模組加進清單就好，
-    這裡的迴圈不用改（跟原本 main.py 裡 ANNOUNCEMENT_STRATEGIES 的用法一致）。
+    這一路維持原本的清單+迴圈用法不變（跟原本 main.py 裡 ANNOUNCEMENT_STRATEGIES 一致）。
+
+    server_triggers：server 訊息的判斷模組清單，每個模組要提供
+        decide(ctx) -> triggers.actions.Action | None
+    ctx 是 triggers.context.TriggerContext，把這則訊息＋帳號＋惰性狀態存取
+    打包成統一入參，模組內部自己判斷「這則訊息歸不歸我管」。清單依序嘗試，
+    第一個回傳非 None 的 Action 就執行；action.stop 決定要不要繼續往下一個
+    trigger 試（見 triggers/actions.py 說明）。都沒有 Action 命中，最後交給
+    reaction_rules 兜底。之後要新增新的觸發模組，照這個介面寫一支放進清單，
+    這裡的迴圈跟 dispatch() 都不用改。
     """
 
     def __init__(self, base_dir, rules_file, account_id_getter,
-                 announcement_strategies=None):
+                 announcement_strategies=None, server_triggers=None):
         self.base_dir = base_dir
         self.account_id_getter = account_id_getter
         self.announcement_strategies = announcement_strategies or []
+        self.server_triggers = server_triggers or []
         self.rule_engine = ReactionRuleEngine(rules_file)
-        # 使用者剛打「培育」後，等待 BOT 第一則回覆；key 是 chat_id。
-        self._awaiting_training_reply = {}
 
     @property
     def account_id(self):
@@ -41,17 +46,24 @@ class ActionDispatcher:
 
         source_type = parsed.get("source_type")
         if source_type == "user" and parsed.get("command") == "培育":
-            self._awaiting_training_reply[record.get("chat_id")] = True
+            # 使用者剛打「培育」，記下來等下一則 server/announcement 訊息
+            # 消費（見下方 consume）。跟訊息本身的 source_type 分支無關，
+            # 所以在最前面、還沒篩選 source_type 之前就要記錄。
+            runtime_state.mark("awaiting_training_reply", record.get("chat_id"))
 
         if source_type not in ("server", "announcement"):
             return
 
-        text = record.get("text") or ""
-        chat_name = record.get("chat_name") or ""
-        was_awaiting_training_reply = self._awaiting_training_reply.pop(record.get("chat_id"), False)
+        # 不管這則訊息最後被哪支 trigger 處理，這個旗標都只消費一次——
+        # 旗標只代表「等到下一則回覆了沒」，不是「是不是培育訊息」，
+        # 這樣才不會因為旗標卡住殘留到很久之後某次不相關的訊息才誤判
+        # （行為跟搬移前一致，只是消費的地方統一到 runtime_state）。
+        was_awaiting_training_reply = runtime_state.consume(
+            "awaiting_training_reply", record.get("chat_id")
+        )
 
         if source_type == "announcement":
-            await self._handle_announcement(text)
+            await self._handle_announcement(record.get("text") or "")
             return  # 公告頻道：不管有沒有動作，都不會再往下走一般觸發規則
 
         # ---- 以下 source_type 只會是 "server" ----
@@ -59,19 +71,23 @@ class ActionDispatcher:
         if await self._handle_profile_sync(parsed):
             return
 
-        if await self._handle_world_boss_status_query(text):
-            return
+        ctx = TriggerContext(
+            record=record,
+            parsed=parsed,
+            base_dir=self.base_dir,
+            account_id=self.account_id,
+            awaiting_training_reply=was_awaiting_training_reply,
+        )
 
-        if await self._handle_main_tower_battle(record, parsed):
-            return
+        for trigger in self.server_triggers:
+            action = trigger.decide(ctx)
+            if action is None:
+                continue  # 這則訊息不歸這支 trigger 管，安靜地換下一個試
+            await actions.execute(action)
+            if action.stop:
+                return
 
-        if await self._handle_guard_clear(record, parsed):
-            return
-
-        if await self._handle_satellite_buttons(record, text, was_awaiting_training_reply):
-            return
-
-        await self.rule_engine.handle(chat_name, text)
+        await self.rule_engine.handle(ctx.chat_name, ctx.text)
 
     # ---- 公告頻道（世界王等）----
     async def _handle_announcement(self, text):
@@ -101,14 +117,11 @@ class ActionDispatcher:
         return False  # 沒有任何策略模組判斷出動作，純資訊公告
 
     # ---- 陀螺／衛星／背包／道具說明：四種資料同步都交給 profile_sync_strategy 統一處理 ----
+    # 這支不算進 server_triggers 清單——它是單一職責的持久化協調者（owns all
+    # persistence），不是「判斷要不要觸發遊戲內動作」的觸發家族成員，介面
+    # 也不一樣（回傳 handled/log/commands，不是 Action），保持原本獨立的
+    # 前置步驟寫法，不勉強塞進統一介面。
     async def _handle_profile_sync(self, parsed):
-        # 改吃整包 parsed（不只 text）：陀螺清單／衛星圖鑑／綁定一覽三種
-        # 已經由 response_parser.py 解析過（parsed['shape']/['structured']），
-        # profile_sync_strategy 直接讀這裡的結果存檔，不再重新解析一次
-        # 原文——跟 _handle_main_tower_battle() 信任上游 shape 判斷的原則
-        # 一致。parsed['raw_text'] 一律都有（見 message_router._base_result()），
-        # 背包／道具說明這兩種還沒有 shape，profile_sync_strategy 內部會
-        # 退回讀這個欄位直接判斷。
         sync_result = profile_sync_strategy.handle_server_message(parsed, self.base_dir, self.account_id)
         if not sync_result["handled"]:
             return False
@@ -118,144 +131,3 @@ class ActionDispatcher:
                 sync_result["commands"], interval_seconds=2, reason=sync_result["commands_reason"]
             )
         return True
-
-    # ---- 世界王查詢回覆（第三道保險）----
-    async def _handle_world_boss_status_query(self, text):
-        if not auto_toggle.is_enabled(self.base_dir, "world_boss"):
-            return False  # 開關關閉：不送出補刀指令，但仍放行讓其他 handler 有機會處理這則訊息
-
-        wb_catalog = world_boss_strategy.load_catalog(self.base_dir)
-        wb_action = world_boss_strategy.decide_action_from_status_query(
-            text, wb_catalog, self.base_dir, self.account_id
-        )
-        if wb_action["mode"] == "now":
-            await executor.send_now(wb_action["command"], chat_id=wb_action["chat_id"], reason=wb_action["reason"])
-            return True
-        return False
-
-    # ---- 主塔進階戰鬥：每回合選擇戰術，交給策略層決定要點哪顆按鈕 ----
-    async def _handle_main_tower_battle(self, record, parsed):
-        buttons = record.get("buttons")
-        if not buttons:
-            return False
-
-        # 用 response_parser 已經判斷好的 shape 來確認，而不是重新對文字做
-        # pattern matching——shape 比對邏輯只在 main_tower_battle_prompt.py
-        # 一個地方維護，這裡單純信任上游結果。
-        if parsed.get("shape") != "main_tower_battle_prompt":
-            return False
-
-        if not auto_toggle.is_enabled(self.base_dir, "main_tower_battle"):
-            print(f"[主塔戰鬥] 🔕 自動點擊已關閉（終端機輸入 /auto 查看開關狀態），"
-                  f"已收到訊息但不會自動點擊，請自行手動選擇")
-            return True
-
-        structured = parsed.get("structured")
-        action = main_tower_battle_strategy.decide_action(structured, buttons)
-        if action:
-            await executor.click_button(
-                chat_id=record.get("chat_id"),
-                message_id=record.get("message_id"),
-                data=action["data"],
-                button_text=action["button_text"],
-                reason=action["reason"],
-            )
-            return True
-
-        # 判斷不出來（例如關鍵數值解析失敗、或必殺技按鈕沒對到），印出提醒但
-        # 不吃掉這則訊息，讓熊自己手動選——寧可少點一次，也不要亂點。
-        print(f"[主塔戰鬥] ⚠️ 策略無法判斷要選哪個戰術按鈕：{(record.get('text') or '')[:40]}...")
-        return True  # 已確認是主塔戰鬥訊息，不用再往下讓其他 handler 誤判
-
-    # ---- 清護衛（半自動）：查詢結果判斷出手／換陀螺、結果訊息判斷是否繼續、
-    #      沒一擊拆掉時的按鈕戰鬥沿用 main_tower_battle_strategy（更保守門檻）----
-    async def _handle_guard_clear(self, record, parsed):
-        shape = parsed.get("shape")
-        if shape not in ("guard_status", "guard_clear_outcome", "guard_battle_prompt"):
-            return False
-
-        if not auto_toggle.is_enabled(self.base_dir, guard_clear_strategy.SYSTEM_KEY):
-            return False  # 不吃掉訊息：關閉時顯示照常，只是不自動出手
-
-        if shape == "guard_status":
-            roster = load_roster(self.base_dir, self.account_id)
-            action = guard_clear_strategy.decide_action(parsed, roster)
-            if action is None:
-                return False  # 不是「還有護衛」的查詢結果，交給其他 handler
-            if action["mode"] == "none":
-                print(f"[清護衛] {action['reason']}")
-                return False  # 沒有動作可送，不吃掉這則訊息
-            await executor.send_sequence(action["commands"], interval_seconds=2, reason=action["reason"])
-            print(f"[清護衛] ✅ {action['reason']}")
-            return True
-
-        if shape == "guard_clear_outcome":
-            action = guard_clear_strategy.decide_after_outcome(parsed)
-            if action["mode"] == "none":
-                print(f"[清護衛] {action['reason']}")
-                return False
-            await executor.send_now(action["commands"][0], reason=action["reason"])
-            print(f"[清護衛] 🔁 {action['reason']}")
-            return True
-
-        # shape == "guard_battle_prompt"：沒一擊拆掉，進入按鈕戰鬥模式，
-        # 沿用主塔戰鬥的決策邏輯，但門檻更保守（見 guard_clear_strategy.py
-        # 的 GUARD_CRITICAL_HP_RATIO / GUARD_SHIELD_PHASE_THRESHOLD 說明）。
-        buttons = record.get("buttons")
-        if not buttons:
-            return False
-
-        structured = parsed.get("structured")
-        action = main_tower_battle_strategy.decide_action(
-            structured, buttons,
-            critical_hp_ratio=guard_clear_strategy.GUARD_CRITICAL_HP_RATIO,
-            shield_phase_threshold=guard_clear_strategy.GUARD_SHIELD_PHASE_THRESHOLD,
-        )
-        if action:
-            await executor.click_button(
-                chat_id=record.get("chat_id"),
-                message_id=record.get("message_id"),
-                data=action["data"],
-                button_text=action["button_text"],
-                reason=action["reason"],
-            )
-            return True
-
-        print(f"[護衛戰鬥] ⚠️ 策略無法判斷要選哪個戰術按鈕：{(record.get('text') or '')[:40]}...")
-        return True  # 已確認是護衛戰鬥訊息，不用再往下讓其他 handler 誤判
-
-    # ---- 群星計畫（衛星培育）：帶按鈕的訊息，交給策略層決定要點哪顆按鈕 ----
-    async def _handle_satellite_buttons(self, record, text, was_awaiting_training_reply):
-        buttons = record.get("buttons")
-        if not buttons:
-            return False
-
-        if not auto_toggle.is_enabled(self.base_dir, "satellite_training"):
-            print(f"[群星計畫] 🔕 自動點擊已關閉（終端機輸入 /auto 查看開關狀態），"
-                  f"已收到訊息但不會自動點擊，請自行手動選擇")
-            return False  # 不吃掉這則訊息，維持原本「放行給 reaction_rules」的行為
-
-        if was_awaiting_training_reply:
-            catalog = satellite_training_strategy.load_catalog(self.base_dir)
-            session_kind = satellite_training_strategy.classify_session_start(text, catalog)
-            if session_kind == "new":
-                print("[群星計畫] 🆕 開始新一輪培育（新建衛星）")
-            elif session_kind == "continuing":
-                print("[群星計畫] ▶️ 續練進行中的衛星")
-
-        action = satellite_training_strategy.decide_action(text, buttons, self.base_dir)
-        if action:
-            await executor.click_button(
-                chat_id=record.get("chat_id"),
-                message_id=record.get("message_id"),
-                data=action["data"],
-                button_text=action["button_text"],
-                reason=action["reason"],
-            )
-            return True
-
-        # 判斷不出來：可能真的是衛星培育但策略沒把握，也可能根本不是衛星培育
-        # （例如戰鬥選擇戰術的按鈕）。印出提醒，但不要 return True 吃掉這則訊息——
-        # 放行讓 reaction_rules 有機會接手（例如戰鬥用 click: 規則自動應戰）。
-        print(f"[群星計畫] ⚠️ 策略無法判斷要選哪個按鈕，若非群星計畫訊息可忽略：{text[:40]}...")
-        return False

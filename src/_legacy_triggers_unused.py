@@ -1,3 +1,8 @@
+# ⚠️ 2026-08-22 整理架構時發現：check_message() 沒有任何呼叫端，已被
+# reaction_rules.py（ReactionRuleEngine）取代。改名讓路給新的 triggers/
+# 套件（觸發模組家族），先保留檔案內容，確認真的沒用到後可以整支刪除，
+# 連同 config/triggers.json 一起。
+
 """
 triggers.py
 自動化觸發規則：監聽到符合條件的訊息時，回報應該執行的 /sched 動作字串。
