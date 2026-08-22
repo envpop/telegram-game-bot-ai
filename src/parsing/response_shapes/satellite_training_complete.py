@@ -38,7 +38,13 @@ def parse(text):
     skills = []
     skills_match = _SKILLS_LINE_PATTERN.search(text)
     if skills_match:
-        skills = [s.strip() for s in skills_match.group(1).split("、") if s.strip()]
+        skills_part = skills_match.group(1).strip()
+        # 「習得技能：無」代表這次培育沒拿到任何技能，"無" 是遊戲畫面的
+        # 固定占位字樣，不是真的技能名稱——比照 main_menu 那邊
+        # count_learned_skills() 的判斷方式，這裡也要特別排除，
+        # 不然會被 choose_primary_skill() 誤當成一個真的技能來選。
+        if not skills_part.startswith("無"):
+            skills = [s.strip() for s in skills_part.split("、") if s.strip()]
 
     return {"stats": stats, "skills": skills}
 

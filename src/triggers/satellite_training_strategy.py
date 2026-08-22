@@ -115,7 +115,7 @@ def count_learned_skills(text):
 # 「🌌 群星計畫　第N/M回合」這種格式，抽出目前回合數跟總回合數（catalog
 # 裡的樣本都是 M=20，但抓成變數而不是寫死 20，避免之後遊戲調整回合數上限
 # 時程式碼要跟著改）。抓不到（代表還沒進入主選單畫面）時回傳 None。
-_ROUND_LINE_PATTERN = re.compile(r"第(\d+)/(\d+)回合")
+_ROUND_LINE_PATTERN = re.compile(r"第\s*(\d+)/(\d+)\s*回合")
 
 
 def parse_round_progress(text):

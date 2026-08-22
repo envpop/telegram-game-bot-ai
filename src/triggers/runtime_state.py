@@ -28,11 +28,25 @@ ActionDispatcher 會越長越雜。
 key 建議用穩定的固定字串（例如 "awaiting_training_reply"），sub_key 用會
 變動的識別碼（例如 chat_id）；不需要區分 sub_key 的狀態（例如全域暫停），
 sub_key 傳 None 或固定字串都可以。
+
+=== 重複派送偵測 ===
+2026-08-22 發現：monitor.py 對同一則訊息的編輯事件完全沒有防重複機制，
+如果 Telethon（例如連線重連時）對同一次編輯重複觸發事件，會造成
+action_dispatcher.py 對同一次內容跑兩次完整流程，導致像「結業」這種
+send_now 指令被送出兩次。is_duplicate_delivery() 用來擋掉這種情況：
+同一個 (chat_id, message_id) 如果文字內容跟上次處理過的完全一樣，
+視為重複派送；文字不同（例如遊戲把同一則訊息編輯成下一回合的新內容，
+這是正常流程）則正常放行。
 """
 import time
 
 _flags = {}   # (key, sub_key) -> True
 _timed = {}   # (key, sub_key) -> expires_at（epoch seconds）
+
+# (chat_id, message_id) -> 上次處理過的文字內容。用 dict 手動維護簡易上限，
+# 避免長時間執行下無限增長（bot 是常駐 process，這裡不加上限會慢慢吃記憶體）。
+_last_processed_text = {}
+_MAX_TRACKED_MESSAGES = 2000
 
 
 def mark(key, sub_key=None) -> None:
@@ -66,3 +80,28 @@ def is_active(key, sub_key=None) -> bool:
         _timed.pop((key, sub_key), None)
         return False
     return True
+
+
+def is_duplicate_delivery(chat_id, message_id, text) -> bool:
+    """判斷這則訊息是不是「內容完全相同」的重複派送。
+
+    同一個 message_id 被編輯成新內容是正常流程（遊戲每回合都編輯同一則
+    訊息），只有文字內容也完全相同才視為重複——這種情況正常不該發生，
+    出現通常代表 Telethon／連線層對同一次編輯重複觸發了事件。
+
+    是重複的話回傳 True（呼叫端應該直接略過，不執行任何動作）；不是
+    重複的話回傳 False，並記住這次內容供下次比對。
+    """
+    key = (chat_id, message_id)
+    if _last_processed_text.get(key) == text:
+        return True
+
+    _last_processed_text[key] = text
+    if len(_last_processed_text) > _MAX_TRACKED_MESSAGES:
+        # 超過上限，丟掉最舊的一筆（dict 從 Python 3.7 起保證插入順序，
+        # 第一個 key 就是最舊插入的）。不追求精確 LRU，這裡只是防止
+        # 無限增長，簡單丟最舊的就夠用。
+        oldest_key = next(iter(_last_processed_text))
+        _last_processed_text.pop(oldest_key, None)
+
+    return False

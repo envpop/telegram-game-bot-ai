@@ -54,6 +54,18 @@ class ActionDispatcher:
         if source_type not in ("server", "announcement"):
             return
 
+        # 重複派送防護：同一則訊息（同 chat_id + message_id）如果文字內容
+        # 跟上次處理過的一模一樣，視為重複事件（常見成因：連線重連時
+        # Telethon 對同一次編輯重複觸發），直接略過，不再跑一次完整流程。
+        # 文字不同（遊戲把同一則訊息編輯成下一回合新內容）則正常放行，
+        # 不受影響。見 runtime_state.is_duplicate_delivery() 說明。
+        if runtime_state.is_duplicate_delivery(
+            record.get("chat_id"), record.get("message_id"), record.get("text")
+        ):
+            print(f"[dispatch] ⏭️ 偵測到重複派送（同一則訊息、內容完全相同），"
+                  f"略過重複處理：chat={record.get('chat_id')} msg={record.get('message_id')}")
+            return
+
         # 不管這則訊息最後被哪支 trigger 處理，這個旗標都只消費一次——
         # 旗標只代表「等到下一則回覆了沒」，不是「是不是培育訊息」，
         # 這樣才不會因為旗標卡住殘留到很久之後某次不相關的訊息才誤判
