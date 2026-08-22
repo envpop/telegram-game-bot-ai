@@ -9,6 +9,7 @@ from triggers import world_boss_strategy
 from triggers import main_tower_battle_strategy
 from triggers import guard_clear_strategy
 from triggers import satellite_training_strategy
+from triggers import satellite_naming_strategy
 from parser import MessageRouter
 from log_maintenance import run_maintenance
 from display_formatter import format_display_line
@@ -66,6 +67,7 @@ dispatcher = ActionDispatcher(
         main_tower_battle_strategy,
         guard_clear_strategy,
         satellite_training_strategy,
+        satellite_naming_strategy,
     ],
 )
 
@@ -152,11 +154,15 @@ async def terminal_input_loop():
                 "gc": "guard_clear",
                 "guard": "guard_clear",
                 "guard_clear": "guard_clear",
+                "satname": "satellite_naming",
+                "sat_name": "satellite_naming",
+                "satellite_naming": "satellite_naming",
             }
             _AUTO_USAGE = ("[錯誤] /auto 用法：\n"
                            "  /auto                    查看三套系統目前開關狀態\n"
                            "  /auto <system> on|off    開啟/關閉指定系統\n"
-                           "  <system>：mtb（主塔戰鬥）／wb（世界王）／sat（群星計畫）／gc（清除守衛）")
+                           "  <system>：mtb（主塔戰鬥）／wb（世界王）／sat（群星計畫）／"
+                           "guard（清除守衛）／satname（群星計畫結業命名）")
             parts = text.split()
             if len(parts) == 1:
                 print("[開關狀態]\n" + auto_toggle.status_summary(BASE_DIR))

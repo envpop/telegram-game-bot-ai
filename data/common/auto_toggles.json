@@ -1,5 +1,5 @@
 {
-  "satellite_training": true,
+  "satellite_training": false,
   "main_tower_battle": true,
   "guard_clear": false
 }

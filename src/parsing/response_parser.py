@@ -45,6 +45,7 @@ from .response_shapes import guard_battle_prompt
 from .response_shapes import active_top_confirmation
 from .response_shapes import sub_top_confirmation
 from .response_shapes import sub_top_status
+from .response_shapes import satellite_training_complete
 
 
 _ROUTE_MAP = {
@@ -80,6 +81,7 @@ _KNOWN_SHAPES = [
     active_top_confirmation,
     sub_top_confirmation,
     sub_top_status,
+    satellite_training_complete,
 ]
 
 

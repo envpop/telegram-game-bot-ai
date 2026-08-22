@@ -9,12 +9,17 @@ satellite_training_strategy.py —— 群星計畫（衛星培育）決策層
 目前的策略目標（融合素材用途，跟一般「求高數值、求金技」相反）：
   - 數值越低越好，不主動選數值特訓
   - 技能恰好一個普通技能：拿到第一個技能前選旋技特訓，拿到後停止
+  - 領悟值超過保底線（上限 - 15，體力值夠時旋技特訓每次拿 15~20 領悟值）
+    時先改選休息，保留這個穩拿的機會，等真的需要時（例如最後一回合）
+    再用（熊 2026-08-22 指定，之前沒有這條，是每回合都選旋技特訓直到拿到技能）
+  - 最後一回合（第 N/N 回合）還沒拿到技能：強制選旋技特訓，不管其他判斷，
+    避免整個 session 白做（熊 2026-08-22 指定，之前沒有這條保底規則）
   - 完全不碰交流類選項：羈絆 >= 80 且金技數 < 3 時會自動觸發金技，
     要避免可控的那 8 個金技，就必須完全不交流
   - 另外 4 個只能靠「黃金事件」（被動觸發）取得的金技，任何選擇都無法
     避免，不需要特別處理
   - 隨機岔路事件（神秘旋核／魔鬼特訓／修行岔路等）：選哪個都行，
-    目前預設固定選第一個選項（c0），純粹為了讓流程能繼續
+    目前預設固定選第二個選項（熊 2026-08-22 指定，原本是第一個）
 
 用法（新版，見檔尾 decide(ctx)）：
     from triggers.satellite_training_strategy import decide
@@ -107,6 +112,40 @@ def count_learned_skills(text):
     return len(skills)
 
 
+# 「🌌 群星計畫　第N/M回合」這種格式，抽出目前回合數跟總回合數（catalog
+# 裡的樣本都是 M=20，但抓成變數而不是寫死 20，避免之後遊戲調整回合數上限
+# 時程式碼要跟著改）。抓不到（代表還沒進入主選單畫面）時回傳 None。
+_ROUND_LINE_PATTERN = re.compile(r"第(\d+)/(\d+)回合")
+
+
+def parse_round_progress(text):
+    """回傳 (目前回合, 總回合數) 的 tuple，抓不到回傳 None。"""
+    match = _ROUND_LINE_PATTERN.search(text)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+# 「🌀 領悟 19/28」這種格式，抓目前領悟值跟上限。上限不寫死（可能因衛星
+# 而異），每次都從當下訊息文字讀，跟 parse_round_progress 同樣的作法。
+_INSIGHT_LINE_PATTERN = re.compile(r"領悟\s*(\d+)\s*/\s*(\d+)")
+
+# 體力值夠的情況下，旋技特訓每次拿 15~20 領悟值（熊 2026-08-22 確認）。
+# 用「保底最小增量」而不是固定門檻數字，是因為只要目前領悟值超過
+# 「上限 - 最小增量」，下一次旋技特訓不管骰到多少都保證滿值拿到技能——
+# 這是數學上算出來的保底線，不是憑感覺訂的門檻，上限變動時這個判斷
+# 依然成立，不用跟著調整常數。
+MIN_INSIGHT_GAIN_WITH_SUFFICIENT_STAMINA = 15
+
+
+def parse_insight_progress(text):
+    """回傳 (目前領悟值, 領悟值上限) 的 tuple，抓不到回傳 None。"""
+    match = _INSIGHT_LINE_PATTERN.search(text)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
 def decide_action(text, buttons, base_dir):
     """核心決策函式。
 
@@ -124,17 +163,21 @@ def decide_action(text, buttons, base_dir):
     kind, event = classify_message(text, catalog)
 
     if kind == "random_event":
-        # 岔路事件：目前策略是選哪個都行，固定選第一個選項，純粹讓流程繼續。
-        first_option = event["options"][0]
+        # 岔路事件：目前策略是選哪個都行，固定選第二個選項，純粹讓流程繼續
+        # （熊 2026-08-22 指定改成第二個，原本是第一個；catalog 裡目前收錄
+        # 的 5 個岔路事件都剛好只有兩個選項，這裡直接假設至少有 2 個，
+        # 之後 catalog 補新事件如果只有 1 個選項，這裡會 IndexError，
+        # 算是刻意保留的提醒，不用特別防禦）。
+        second_option = event["options"][1]
         # 拿 button data 要去實際 buttons 清單裡找，而不是直接信任 catalog
         # （catalog 只是參考資料，實際點擊一律以 monitor 當下記錄的 data 為準，
         # 避免遊戲版本更新後 catalog 沒同步更新導致點錯）。
-        matched = _find_button_by_text(buttons, first_option["text"])
+        matched = _find_button_by_text(buttons, second_option["text"])
         if matched:
             return {
                 "data": matched["data"],
                 "button_text": matched["text"],
-                "reason": f"隨機岔路事件（{event['event_id']}），策略：固定選第一個選項",
+                "reason": f"隨機岔路事件（{event['event_id']}），策略：固定選第二個選項",
             }
         return None
 
@@ -143,7 +186,34 @@ def decide_action(text, buttons, base_dir):
         if learned_count is None:
             learned_count = 0  # 保守起見，抓不到就當作還沒有技能
 
-        if learned_count == 0:
+        round_progress = parse_round_progress(text)
+        is_last_round = round_progress is not None and round_progress[0] >= round_progress[1]
+
+        insight_progress = parse_insight_progress(text)
+        # 目前領悟值超過「上限 - 最小增量」，代表下一次旋技特訓不管骰到
+        # 多少都保證滿值拿到技能——保底已經穩了，不用急著這回合就用掉。
+        guaranteed_next_roll = (
+            insight_progress is not None
+            and insight_progress[0] > insight_progress[1] - MIN_INSIGHT_GAIN_WITH_SUFFICIENT_STAMINA
+        )
+
+        if learned_count == 0 and is_last_round:
+            # 這個 session 最後一回合了還沒拿到技能——這是最後一次機會，
+            # 強制選旋技特訓，不管其他判斷怎麼說（包括下面的保底判斷：
+            # 就算領悟值已經過保底線，此時也該用掉而不是繼續休息），
+            # 避免這次培育白做。
+            target_data = "tr_skill"
+            reason = (f"第 {round_progress[0]}/{round_progress[1]} 回合"
+                       "（本 session 最後一回合），尚未取得技能，最後機會強制選旋技特訓")
+        elif learned_count == 0 and guaranteed_next_roll:
+            # 還沒拿到技能，但領悟值已經過保底線：先選休息（不增加領悟值），
+            # 把這個穩拿的機會留到真的需要的時候（例如最後一回合）才用掉，
+            # 不用每回合都急著選旋技特訓。
+            target_data = "rest"
+            reason = (f"領悟 {insight_progress[0]}/{insight_progress[1]}，已過保底門檻"
+                       "（再選旋技特訓必定滿值拿到技能），先休息保留這個機會，"
+                       "留到真的需要時（例如最後一回合）再用")
+        elif learned_count == 0:
             target_data = "tr_skill"
             reason = "尚未取得任何技能，選旋技特訓以取得第一個普通技能"
         else:
