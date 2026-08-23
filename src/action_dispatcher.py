@@ -91,6 +91,14 @@ class ActionDispatcher:
             awaiting_training_reply=was_awaiting_training_reply,
         )
 
+        if runtime_state.is_active("suspend_triggers"):
+            # 全域暫停中（目前唯一來源：櫻花窗口期間，見 sakura_strategy.py）。
+            # 略過整個自動判斷鏈（觸發清單＋兜底的 reaction_rules），避免
+            # 跟窗口期間排定的一長串連刷指令互相干擾。profile_sync 在上面
+            # 已經跑過、不受影響——純資料同步沒有主動送指令的風險。
+            print(f"[dispatch] ⏸️ 自動觸發暫停中（櫻花窗口期間），略過本則訊息判斷：chat={ctx.chat_id}")
+            return
+
         for trigger in self.server_triggers:
             action = trigger.decide(ctx)
             if action is None:
@@ -103,6 +111,10 @@ class ActionDispatcher:
 
     # ---- 公告頻道（世界王等）----
     async def _handle_announcement(self, text):
+        if runtime_state.is_active("suspend_triggers"):
+            print("[公告觸發] ⏸️ 自動觸發暫停中（櫻花窗口期間），略過本則公告判斷")
+            return False
+
         for strategy in self.announcement_strategies:
             system_key = getattr(strategy, "SYSTEM_KEY", None)
             if system_key and not auto_toggle.is_enabled(self.base_dir, system_key):
@@ -115,16 +127,19 @@ class ActionDispatcher:
                 await executor.send_now(action["command"], chat_id=action["chat_id"], reason=action["reason"])
                 return True
             if action["mode"] == "scheduled":
+                # repeat/interval 是選填（world_boss 目前只用單次延遲送出，
+                # 不用設；sakura_strategy 用來排一長串重複指令，見該檔說明）。
                 job = scheduler.ScheduledJob(
                     steps=[action["command"]],
-                    delay_seconds=action["delay_seconds"],
-                    chat_id=action["chat_id"],
-                    reason=action["reason"],
+                    delay_seconds=action.get("delay_seconds", 0.0),
+                    repeat=action.get("repeat", 1),
+                    interval=action.get("interval", (0.0, 0.0)),
+                    chat_id=action.get("chat_id"),
+                    reason=action.get("reason"),
                 )
                 job_id = scheduler.schedule(job)
                 print(f"[公告觸發] ⏳ {action['reason']}，已排程 {job_id}"
-                      f"（{action['delay_seconds']:.0f} 秒後執行，"
-                      f"可用 /sched list 查看、/sched cancel {job_id} 取消）")
+                      f"（可用 /sched list 查看目前狀態、/sched cancel {job_id} 取消）")
                 return True
         return False  # 沒有任何策略模組判斷出動作，純資訊公告
 

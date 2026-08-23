@@ -10,6 +10,7 @@ from triggers import main_tower_battle_strategy
 from triggers import guard_clear_strategy
 from triggers import satellite_training_strategy
 from triggers import satellite_naming_strategy
+from triggers import sakura_strategy
 from parser import MessageRouter
 from log_maintenance import run_maintenance
 from display_formatter import format_display_line
@@ -61,7 +62,7 @@ dispatcher = ActionDispatcher(
     base_dir=BASE_DIR,
     rules_file=REACTION_RULES_FILE,
     account_id_getter=_get_account_id,
-    announcement_strategies=[world_boss_strategy],
+    announcement_strategies=[world_boss_strategy, sakura_strategy],
     server_triggers=[
         world_boss_strategy,
         main_tower_battle_strategy,
@@ -157,12 +158,14 @@ async def terminal_input_loop():
                 "satname": "satellite_naming",
                 "sat_name": "satellite_naming",
                 "satellite_naming": "satellite_naming",
+                "sakura": "sakura_auto_challenge",
+                "sakura_auto_challenge": "sakura_auto_challenge",
             }
             _AUTO_USAGE = ("[錯誤] /auto 用法：\n"
                            "  /auto                    查看三套系統目前開關狀態\n"
                            "  /auto <system> on|off    開啟/關閉指定系統\n"
                            "  <system>：mtb（主塔戰鬥）／wb（世界王）／sat（群星計畫）／"
-                           "guard（清除守衛）／satname（群星計畫結業命名）")
+                           "gc（清除守衛）／satname（群星計畫結業命名）／sakura（櫻花窗口自動連刷）")
             parts = text.split()
             if len(parts) == 1:
                 print("[開關狀態]\n" + auto_toggle.status_summary(BASE_DIR))
@@ -178,6 +181,36 @@ async def terminal_input_loop():
                     print(f"[開關] {label}：{state}")
             else:
                 print(_AUTO_USAGE)
+            continue
+
+        if text.startswith("/sakura"):
+            # 設定櫻花窗口自動連刷要打哪種塔、多快打（跟開關本身分開——
+            # /auto sakura on|off 是總開關，這裡是選模式）。共 6 種組合
+            # （2 種指令 × 3 種速度），設定會落地存檔，之後每次觸發都照
+            # 目前設定跑，不用每次都重設。
+            # 用法：
+            #   /sakura                       查看目前設定
+            #   /sakura <tower> <speed>        設定指令種類與速度
+            # <tower>：tower（連續活動塔）／advanced_tower（連續進階活動塔）
+            # <speed>：slow（慢速≈80次）／medium（中速≈140次）／fast（快速≈200次）
+            _SAKURA_USAGE = ("[錯誤] /sakura 用法：\n"
+                              "  /sakura                        查看目前設定\n"
+                              "  /sakura <tower> <speed>         設定模式\n"
+                              "  <tower>：tower（連續活動塔）／advanced_tower（連續進階活動塔）\n"
+                              "  <speed>：slow（慢速）／medium（中速）／fast（快速）")
+            parts = text.split()
+            if len(parts) == 1:
+                mode = sakura_strategy.load_mode(BASE_DIR)
+                print(f"[櫻花模式] 目前設定：{sakura_strategy.describe_mode(mode)}")
+            elif len(parts) == 3:
+                try:
+                    sakura_strategy.set_mode(BASE_DIR, parts[1], parts[2])
+                    mode = sakura_strategy.load_mode(BASE_DIR)
+                    print(f"[櫻花模式] ✅ 已設定：{sakura_strategy.describe_mode(mode)}")
+                except ValueError as e:
+                    print(f"[錯誤] {e}")
+            else:
+                print(_SAKURA_USAGE)
             continue
 
         if text.startswith("/click"):

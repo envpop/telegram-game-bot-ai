@@ -25,6 +25,7 @@ SYSTEM_KEYS = {
     "satellite_training": "群星計畫（培育衛星）",
     "guard_clear": "清護衛",
     "satellite_naming": "群星計畫結業命名",
+    "sakura_auto_challenge": "櫻花窗口自動連刷",
 }
 
 
