@@ -51,7 +51,7 @@ SYSTEM_KEY = "sakura_auto_challenge"
 
 TRIGGER_PATTERN = "施放了「櫻花綻放的圓舞曲」"
 
-WINDOW_SECONDS = 300  # 5 分鐘
+WINDOW_SECONDS =  295  # 5 分鐘減去lag可能秒數
 
 # 熊 2026-08-22 提供的實測基準：5 分鐘窗口大概能塞進去的指令數。
 # suspend_triggers：這個速度期間要不要暫停其他自動觸發（見 decide_action
@@ -74,14 +74,16 @@ _MODE_FILENAME = "sakura_mode.json"
 _DEFAULT_MODE = {"command": "advanced_tower", "speed": "medium"}
 
 
-def _mode_path(base_dir) -> Path:
-    return Path(base_dir) / "data" / "common" / _MODE_FILENAME
+def _mode_path(base_dir, account_id) -> Path:
+    return Path(base_dir) / "data" / account_id / _MODE_FILENAME
 
 
-def load_mode(base_dir) -> dict:
+def load_mode(base_dir, account_id) -> dict:
     """讀目前設定的指令種類＋速度，檔案不存在或內容壞掉都回傳預設值，
-    不會噴例外——這是自動觸發路徑，讀檔失敗不該讓整個 dispatch 掛掉。"""
-    path = _mode_path(base_dir)
+    不會噴例外——這是自動觸發路徑，讀檔失敗不該讓整個 dispatch 掛掉。
+    這是帳號個人偏好（不同帳號可能想要不同速度／指令），放在
+    data/{account_id}/ 底下，不是 data/common/。"""
+    path = _mode_path(base_dir, account_id)
     if not path.exists():
         return dict(_DEFAULT_MODE)
     try:
@@ -93,7 +95,7 @@ def load_mode(base_dir) -> dict:
     return data
 
 
-def set_mode(base_dir, command_key: str, speed_key: str) -> None:
+def set_mode(base_dir, account_id, command_key: str, speed_key: str) -> None:
     """設定指令種類＋速度。command_key 是 COMMANDS 的 key（tower／advanced_tower），
     speed_key 是 SPEED_PRESETS 的 key（slow／medium／fast）。傳錯值直接噴
     ValueError，讓終端機指令那層可以接住印出用法錯誤，不要在這裡吞掉。"""
@@ -102,7 +104,7 @@ def set_mode(base_dir, command_key: str, speed_key: str) -> None:
     if speed_key not in SPEED_PRESETS:
         raise ValueError(f"未知的速度「{speed_key}」，可用：{', '.join(SPEED_PRESETS)}")
 
-    path = _mode_path(base_dir)
+    path = _mode_path(base_dir, account_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"command": command_key, "speed": speed_key}, ensure_ascii=False, indent=2),
@@ -120,16 +122,19 @@ def describe_mode(mode: dict) -> str:
 
 
 def load_catalog(base_dir):
-    """跟其他 announcement 模組介面一致（load_catalog + decide_action 兩段式），
-    這裡的 catalog 就是目前設定的模式，不是真的「圖鑑」。"""
-    return load_mode(base_dir)
+    """跟其他 announcement 模組介面一致（_handle_announcement 呼叫時只給
+    base_dir，沒有 account_id，沒辦法在這裡讀帳號個人設定）。模式設定
+    改成在 decide_action() 裡直接用 account_id 讀取，這裡回傳空字典，
+    純粹是為了滿足介面、不影響 _handle_announcement 的呼叫方式。"""
+    return {}
 
 
 def decide_action(text, catalog, base_dir, account_id):
     if TRIGGER_PATTERN not in text:
         return {"mode": None}
 
-    preset = SPEED_PRESETS[catalog["speed"]]
+    mode = load_mode(base_dir, account_id)
+    preset = SPEED_PRESETS[mode["speed"]]
 
     # 窗口期間全員共用（不限熊自己施放），中速／快速指令間隔太密，很容易
     # 跟護衛／世界王這類會主動送出指令的觸發模組互相干擾（熊 2026-08-22
@@ -141,7 +146,7 @@ def decide_action(text, catalog, base_dir, account_id):
     if preset["suspend_triggers"]:
         runtime_state.set_until("suspend_triggers", None, time.time() + WINDOW_SECONDS)
 
-    command_text = COMMANDS[catalog["command"]]
+    command_text = COMMANDS[mode["command"]]
     count = preset["count"]
     interval = WINDOW_SECONDS / count
     suspend_note = "期間暫停其他自動觸發" if preset["suspend_triggers"] else "其他自動觸發照常運作"
@@ -153,5 +158,5 @@ def decide_action(text, catalog, base_dir, account_id):
         "interval": (interval, interval),
         "delay_seconds": 0.0,
         "chat_id": None,
-        "reason": f"櫻花窗口開啟，自動連刷：{describe_mode(catalog)}（{suspend_note}）",
+        "reason": f"櫻花窗口開啟，自動連刷：{describe_mode(mode)}（{suspend_note}）",
     }

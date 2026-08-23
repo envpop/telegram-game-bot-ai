@@ -199,13 +199,14 @@ async def terminal_input_loop():
                               "  <tower>：tower（連續活動塔）／advanced_tower（連續進階活動塔）\n"
                               "  <speed>：slow（慢速）／medium（中速）／fast（快速）")
             parts = text.split()
+            account_id = _get_account_id()  # 模式是帳號個人偏好，見 sakura_strategy.py 說明
             if len(parts) == 1:
-                mode = sakura_strategy.load_mode(BASE_DIR)
+                mode = sakura_strategy.load_mode(BASE_DIR, account_id)
                 print(f"[櫻花模式] 目前設定：{sakura_strategy.describe_mode(mode)}")
             elif len(parts) == 3:
                 try:
-                    sakura_strategy.set_mode(BASE_DIR, parts[1], parts[2])
-                    mode = sakura_strategy.load_mode(BASE_DIR)
+                    sakura_strategy.set_mode(BASE_DIR, account_id, parts[1], parts[2])
+                    mode = sakura_strategy.load_mode(BASE_DIR, account_id)
                     print(f"[櫻花模式] ✅ 已設定：{sakura_strategy.describe_mode(mode)}")
                 except ValueError as e:
                     print(f"[錯誤] {e}")
