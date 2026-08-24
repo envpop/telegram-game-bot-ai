@@ -62,7 +62,7 @@ WINDOW_SECONDS = 300  # 5 分鐘
 # 會被強制冷卻 1 分鐘，比正常冷卻更嚴重，一定要避免）。保留這段安全
 # 緩衝，只用 WINDOW_SECONDS - SAFETY_MARGIN_SECONDS 這麼多秒去排程，
 # 次數不變（熊給的 80/140/200 這幾個數字不動），把每次間隔壓縮一點。
-SAFETY_MARGIN_SECONDS = 45
+SAFETY_MARGIN_SECONDS = 55
 
 # 熊 2026-08-22 提供的實測基準：5 分鐘窗口大概能塞進去的指令數。
 # suspend_triggers：這個速度期間要不要暫停其他自動觸發（見 decide_action

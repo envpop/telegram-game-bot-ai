@@ -3,6 +3,6 @@
   "main_tower_battle": true,
   "guard_clear": true,
   "satellite_naming": false,
-  "sakura_auto_challenge": false,
+  "sakura_auto_challenge": true,
   "world_boss": true
 }
