@@ -70,7 +70,7 @@ SAFETY_MARGIN_SECONDS = 55
 # 沒差，不用暫停；中速／快速間隔太密，容易互相干擾，還是要暫停。
 SPEED_PRESETS = {
     "slow": {"label": "慢速", "count": 80, "suspend_triggers": False},
-    "medium": {"label": "中速", "count": 140, "suspend_triggers": True},
+    "medium": {"label": "中速", "count": 140, "suspend_triggers": False},
     "fast": {"label": "快速", "count": 200, "suspend_triggers": True},
 }
 
