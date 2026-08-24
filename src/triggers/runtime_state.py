@@ -48,6 +48,13 @@ _timed = {}   # (key, sub_key) -> expires_at（epoch seconds）
 _last_processed_text = {}
 _MAX_TRACKED_MESSAGES = 2000
 
+_NOT_FOUND = object()
+
+# 判斷「這個 key 從沒出現過」用的哨兵值，不能用 None 當預設——如果真的
+# 遇到 text 本身就是 None 的訊息（例如純貼圖沒有文字），dict.get(key) 在
+# key 不存在時也回傳 None，會跟「文字剛好是 None」的合法情況混在一起，
+# 導致這種訊息第一次出現也被誤判成重複。
+
 
 def mark(key, sub_key=None) -> None:
     """設定一次性旗標。"""
@@ -93,7 +100,7 @@ def is_duplicate_delivery(chat_id, message_id, text) -> bool:
     重複的話回傳 False，並記住這次內容供下次比對。
     """
     key = (chat_id, message_id)
-    if _last_processed_text.get(key) == text:
+    if _last_processed_text.get(key, _NOT_FOUND) == text:
         return True
 
     _last_processed_text[key] = text
@@ -105,3 +112,4 @@ def is_duplicate_delivery(chat_id, message_id, text) -> bool:
         _last_processed_text.pop(oldest_key, None)
 
     return False
+    

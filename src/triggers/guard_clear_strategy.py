@@ -42,11 +42,12 @@ main_tower_battle_strategy.decide_action()，只是傳更保守的門檻參數
   遊戲機制本身的限制，戰鬥模式本來就能處理，只是多打一場。
 """
 
+import auto_toggle
 from query_reactor import recommend_for_guard_target
 from triggers import actions
 from triggers import main_tower_battle_strategy
 
-SYSTEM_KEY = "guard_clear"
+SYSTEM_KEY = auto_toggle.GUARD_CLEAR
 
 # 護衛戰鬥可能是不利對局（見 main_tower_battle_strategy.py 的說明），
 # 門檻比 mtb 更保守——這是拍腦袋的起始值，不是遊戲內建數字，熊實戰觀察

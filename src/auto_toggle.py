@@ -1,5 +1,6 @@
 """
-auto_toggle.py —— 統一管理「自動發送／自動點擊」開關的極簡狀態存取層。
+auto_toggle.py —— 統一管理「自動發送／自動點擊」開關的極簡狀態存取層，
+同時是所有 system_key 字串常數的唯一來源。
 
 以少控多：目前會自動送出動作的系統有三套——主塔戰鬥（自動點戰術按鈕）、
 世界王摸王（自動送出攻擊指令）、群星計畫（自動點培育按鈕）。三套的開關
@@ -8,29 +9,50 @@ auto_toggle.py —— 統一管理「自動發送／自動點擊」開關的極�
 第四套會自動發送的系統，不用新增檔案，呼叫端用一個新的 system_key 呼叫
 is_enabled()/set_enabled() 就好。
 
+=== system_key 常數集中在這裡 ===
+2026-08-22 發現：同一個 system_key 字串（例如 "satellite_naming"）本來
+分別寫死在三個地方——各 trigger 模組自己的 SYSTEM_KEY 常數、這裡的
+SYSTEM_KEYS 字典、main.py 的 _AUTO_ALIASES 字典，新增一套系統要記得
+同步改三處，容易漏掉其中一個造成不一致（main.py 就漏過一次）。現在
+字串常數只在這裡定義一次，其他地方一律 import 這裡的常數，不再各自
+打一次字面字串：
+    triggers/xxx_strategy.py:  SYSTEM_KEY = auto_toggle.SATELLITE_NAMING
+    main.py 的 _AUTO_ALIASES：value 一律引用這裡的常數
+新增一套系統時，只要在這裡加一個常數＋SYSTEM_KEYS 的一行，其他地方
+import 就好，不會再有三處分別打字串、容易打錯或漏改的問題。
+
 狀態存在 data/common/auto_toggles.json，格式：
     {"main_tower_battle": true, "world_boss": true, "satellite_training": true}
 沒有紀錄過的 system_key（或整份檔案不存在）一律視為開啟，不用特別初始化。
 """
 import json
-from pathlib import Path
+
+from data_store import common_dir
 
 _STATE_FILENAME = "auto_toggles.json"
 
+# system_key 常數——其他模組 import 這些常數使用，不要直接打字面字串。
+MAIN_TOWER_BATTLE = "main_tower_battle"
+WORLD_BOSS = "world_boss"
+SATELLITE_TRAINING = "satellite_training"
+GUARD_CLEAR = "guard_clear"
+SATELLITE_NAMING = "satellite_naming"
+SAKURA_AUTO_CHALLENGE = "sakura_auto_challenge"
+
 # system_key -> 顯示用中文名稱，供 print 訊息跟終端機指令共用，
-# 新增系統時只要在這裡加一行，指令跟提示訊息就會自動吃到。
+# 新增系統時只要在這裡（連同上面的常數）加一行，指令跟提示訊息就會自動吃到。
 SYSTEM_KEYS = {
-    "main_tower_battle": "主塔戰鬥",
-    "world_boss": "世界王摸王",
-    "satellite_training": "群星計畫（培育衛星）",
-    "guard_clear": "清護衛",
-    "satellite_naming": "群星計畫結業命名",
-    "sakura_auto_challenge": "櫻花窗口自動連刷",
+    MAIN_TOWER_BATTLE: "主塔戰鬥",
+    WORLD_BOSS: "世界王摸王",
+    SATELLITE_TRAINING: "群星計畫（培育衛星）",
+    GUARD_CLEAR: "清護衛",
+    SATELLITE_NAMING: "群星計畫結業命名",
+    SAKURA_AUTO_CHALLENGE: "櫻花窗口自動連刷",
 }
 
 
 def _state_file_path(base_dir):
-    return Path(base_dir) / "data" / "common" / _STATE_FILENAME
+    return common_dir(base_dir) / _STATE_FILENAME
 
 
 def _load_state(base_dir):

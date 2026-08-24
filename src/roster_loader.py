@@ -17,17 +17,17 @@ from pathlib import Path
 
 from query_reactor import resolve_roster
 from battle_status import load_element_catalog
+from data_store import account_dir as _account_dir, common_dir as _common_dir
 
 
 def load_roster(base_dir, account_id):
     """回傳這個帳號目前的 roster（已套用 element 解析），找不到 tops.json
     就回傳空 list，不噴錯——呼叫端應該把空 list 當「還沒有資料，先不動作」
     處理，不是異常狀況。"""
-    base = Path(base_dir)
-    account_dir = base / "data" / str(account_id)
-    common_dir = base / "data" / "common"
+    account_path = _account_dir(base_dir, account_id)
+    common_path = _common_dir(base_dir)
 
-    tops_path = account_dir / "tops.json"
+    tops_path = account_path / "tops.json"
     if not tops_path.exists():
         return []
 
@@ -35,13 +35,13 @@ def load_roster(base_dir, account_id):
         raw_roster = json.load(f)["detailed"]
 
     cast_catalog = {}
-    cast_path = account_dir / "cast_tops_catalog.json"
+    cast_path = account_path / "cast_tops_catalog.json"
     if cast_path.exists():
         with cast_path.open(encoding="utf-8") as f:
             cast_catalog = json.load(f)
 
     special_catalog = {}
-    special_path = common_dir / "special_tops_catalog.json"
+    special_path = common_path / "special_tops_catalog.json"
     if special_path.exists():
         with special_path.open(encoding="utf-8") as f:
             special_catalog = json.load(f)

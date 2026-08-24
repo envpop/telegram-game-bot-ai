@@ -49,12 +49,13 @@ v1（HP 比例三段式）在兩場實戰都輸了——王的單回合爆發傷
 交給熊自己手動選。由 action_dispatcher.py 在呼叫 decide_action 之前檢查。
 """
 
+import auto_toggle
 from triggers import actions
 
 # 自動點擊開關的 system_key，跟世界王、群星計畫共用同一套 auto_toggle 機制
 # （見檔頭「自動點擊開關」說明）。搬移前這個字串是直接寫死在
 # action_dispatcher.py 裡的字面值，現在跟其他觸發模組一樣定義成模組常數。
-SYSTEM_KEY = "main_tower_battle"
+SYSTEM_KEY = auto_toggle.MAIN_TOWER_BATTLE
 
 # HP 比例低於這個值，判定「生死交關」——不管防禦/進攻哪個階段，優先強攻，
 # 靠吸血拚一口氣，因為攻擊型陀螺穩守減傷有限，硬守也擋不住。

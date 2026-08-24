@@ -45,13 +45,24 @@ import json
 import time
 from pathlib import Path
 
+import auto_toggle
 from triggers import runtime_state
+from data_store import account_dir
 
-SYSTEM_KEY = "sakura_auto_challenge"
+SYSTEM_KEY = auto_toggle.SAKURA_AUTO_CHALLENGE
 
 TRIGGER_PATTERN = "施放了「櫻花綻放的圓舞曲」"
 
-WINDOW_SECONDS =  295  # 5 分鐘減去lag可能秒數
+WINDOW_SECONDS = 300  # 5 分鐘
+
+# scheduler.py 的 _run_job() 是「送出指令→等 interval」，不是「每 interval
+# 秒送一次」——送出指令本身的網路來回時間會疊加在 interval 之外，次數
+# 越多累積的額外耗時越明顯。照 WINDOW_SECONDS/次數 算出來的間隔一定會
+# 超時（熊 2026-08-22 反映：跑下來總是超過 5 分鐘限制，超時送出的指令
+# 會被強制冷卻 1 分鐘，比正常冷卻更嚴重，一定要避免）。保留這段安全
+# 緩衝，只用 WINDOW_SECONDS - SAFETY_MARGIN_SECONDS 這麼多秒去排程，
+# 次數不變（熊給的 80/140/200 這幾個數字不動），把每次間隔壓縮一點。
+SAFETY_MARGIN_SECONDS = 45
 
 # 熊 2026-08-22 提供的實測基準：5 分鐘窗口大概能塞進去的指令數。
 # suspend_triggers：這個速度期間要不要暫停其他自動觸發（見 decide_action
@@ -59,7 +70,7 @@ WINDOW_SECONDS =  295  # 5 分鐘減去lag可能秒數
 # 沒差，不用暫停；中速／快速間隔太密，容易互相干擾，還是要暫停。
 SPEED_PRESETS = {
     "slow": {"label": "慢速", "count": 80, "suspend_triggers": False},
-    "medium": {"label": "中速", "count": 140, "suspend_triggers": False},
+    "medium": {"label": "中速", "count": 140, "suspend_triggers": True},
     "fast": {"label": "快速", "count": 200, "suspend_triggers": True},
 }
 
@@ -75,7 +86,7 @@ _DEFAULT_MODE = {"command": "advanced_tower", "speed": "medium"}
 
 
 def _mode_path(base_dir, account_id) -> Path:
-    return Path(base_dir) / "data" / account_id / _MODE_FILENAME
+    return account_dir(base_dir, account_id) / _MODE_FILENAME
 
 
 def load_mode(base_dir, account_id) -> dict:
@@ -105,11 +116,16 @@ def set_mode(base_dir, account_id, command_key: str, speed_key: str) -> None:
         raise ValueError(f"未知的速度「{speed_key}」，可用：{', '.join(SPEED_PRESETS)}")
 
     path = _mode_path(base_dir, account_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"command": command_key, "speed": speed_key}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def _interval_for_count(count: int) -> float:
+    """算單次指令的間隔秒數——用 WINDOW_SECONDS 扣掉安全緩衝去分攤，
+    次數不變，只把間隔壓縮一點，見檔頭 SAFETY_MARGIN_SECONDS 說明。"""
+    return (WINDOW_SECONDS - SAFETY_MARGIN_SECONDS) / count
 
 
 def describe_mode(mode: dict) -> str:
@@ -117,7 +133,7 @@ def describe_mode(mode: dict) -> str:
     command_text = COMMANDS[mode["command"]]
     preset = SPEED_PRESETS[mode["speed"]]
     count = preset["count"]
-    interval = WINDOW_SECONDS / count
+    interval = _interval_for_count(count)
     return f"{command_text}／{preset['label']}（{count} 次、間隔 {interval:.2f} 秒）"
 
 
@@ -148,7 +164,7 @@ def decide_action(text, catalog, base_dir, account_id):
 
     command_text = COMMANDS[mode["command"]]
     count = preset["count"]
-    interval = WINDOW_SECONDS / count
+    interval = _interval_for_count(count)
     suspend_note = "期間暫停其他自動觸發" if preset["suspend_triggers"] else "其他自動觸發照常運作"
 
     return {

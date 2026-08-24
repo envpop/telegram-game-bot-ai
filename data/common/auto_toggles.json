@@ -2,5 +2,7 @@
   "satellite_training": false,
   "main_tower_battle": true,
   "guard_clear": true,
-  "satellite_naming": false
+  "satellite_naming": false,
+  "sakura_auto_challenge": false,
+  "world_boss": true
 }

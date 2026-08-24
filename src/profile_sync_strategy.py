@@ -50,6 +50,7 @@ import backpack_watcher
 import forge_result_parser
 import inventory_parsers
 from pathlib import Path
+from data_store import account_dir
 
 # response_parser.py 的 _KNOWN_SHAPES 裡，三種訊息各自的 shape 名稱
 # （shape_module.__name__.rsplit(".", 1)[-1] 算出來的值，對照
@@ -439,7 +440,7 @@ _PENDING_FORGE_FILENAME = "pending_forge_results.json"
 
 
 def _pending_forge_path(base_dir, account_id):
-    return Path(base_dir) / "data" / str(account_id) / _PENDING_FORGE_FILENAME
+    return account_dir(base_dir, account_id) / _PENDING_FORGE_FILENAME
 
 
 def _load_pending_forge(base_dir, account_id):
@@ -491,8 +492,7 @@ def _commit_matching_pending_forge(detailed, base_dir, account_id):
             element_stage=candidate["element_stage"], atk=candidate["atk"], defense=candidate["defense"],
             endurance=candidate["endurance"], power=candidate["power"],
         )
-        catalog_path = Path(base_dir) / "data" / str(account_id) / "cast_tops_catalog.json"
-        catalog_path.parent.mkdir(parents=True, exist_ok=True)
+        catalog_path = account_dir(base_dir, account_id) / "cast_tops_catalog.json"
         catalog = forge_result_parser.load_cast_catalog(catalog_path)
         catalog[result.name] = forge_result_parser._to_catalog_entry(result)
         forge_result_parser.save_cast_catalog(catalog, catalog_path)

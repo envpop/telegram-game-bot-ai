@@ -31,9 +31,11 @@ import json
 import re
 from pathlib import Path
 
+import auto_toggle
 from triggers import actions
+from data_store import common_dir
 
-SYSTEM_KEY = "satellite_naming"
+SYSTEM_KEY = auto_toggle.SATELLITE_NAMING
 
 # 只能靠隨機事件取得的特殊金技，跟 satellite_catalog_display.py 共用同一份
 # 清單（那邊是「衛星圖鑑」畫面在用，這裡是結業命名在用，兩個用途不同但
@@ -81,7 +83,7 @@ def choose_primary_skill(skills):
 
 
 def _sequence_path(base_dir) -> Path:
-    return Path(base_dir) / "data" / "common" / _SEQUENCE_FILENAME
+    return common_dir(base_dir) / _SEQUENCE_FILENAME
 
 
 def next_sequence_number(base_dir) -> int:

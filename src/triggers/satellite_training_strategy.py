@@ -38,12 +38,13 @@ import json
 import re
 from pathlib import Path
 
+import auto_toggle
 from triggers import actions
 
 _CATALOG_CACHE = None
 
 # 自動點擊開關的 system_key，跟主塔戰鬥、世界王共用同一套 auto_toggle 機制。
-SYSTEM_KEY = "satellite_training"
+SYSTEM_KEY = auto_toggle.SATELLITE_TRAINING
 
 
 def _catalog_path(base_dir):

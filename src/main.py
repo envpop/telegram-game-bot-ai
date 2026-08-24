@@ -141,26 +141,25 @@ async def terminal_input_loop():
             # 用法：
             #   /auto                       查看三套系統目前開關狀態
             #   /auto <system> on|off       開啟/關閉指定系統
-            # <system> 可用簡稱：mtb / wb / sat / gc ，或完整 key：
-            #   main_tower_battle / world_boss / satellite_training / guard_clear
-            _AUTO_ALIASES = {
-                "mtb": "main_tower_battle",
-                "main_tower": "main_tower_battle",
-                "main_tower_battle": "main_tower_battle",
-                "wb": "world_boss",
-                "world_boss": "world_boss",
-                "sat": "satellite_training",
-                "satellite": "satellite_training",
-                "satellite_training": "satellite_training",
-                "gc": "guard_clear",
-                "guard": "guard_clear",
-                "guard_clear": "guard_clear",
-                "satname": "satellite_naming",
-                "sat_name": "satellite_naming",
-                "satellite_naming": "satellite_naming",
-                "sakura": "sakura_auto_challenge",
-                "sakura_auto_challenge": "sakura_auto_challenge",
+            # <system> 可用簡稱（見下面 _AUTO_SHORT_ALIASES），或完整 key
+            # （auto_toggle.SYSTEM_KEYS 裡的任何一個 key 都自動可用，不用
+            # 在這裡重複列一次——新增系統時只要在 auto_toggle.py 加常數，
+            # 這裡完整 key 的部分就自動吃到，只有短別名需要手動加一行）。
+            _AUTO_SHORT_ALIASES = {
+                "mtb": auto_toggle.MAIN_TOWER_BATTLE,
+                "main_tower": auto_toggle.MAIN_TOWER_BATTLE,
+                "wb": auto_toggle.WORLD_BOSS,
+                "sat": auto_toggle.SATELLITE_TRAINING,
+                "satellite": auto_toggle.SATELLITE_TRAINING,
+                "gc": auto_toggle.GUARD_CLEAR,
+                "guard": auto_toggle.GUARD_CLEAR,
+                "satname": auto_toggle.SATELLITE_NAMING,
+                "sat_name": auto_toggle.SATELLITE_NAMING,
+                "sakura": auto_toggle.SAKURA_AUTO_CHALLENGE,
             }
+            # 完整 key 一律可以當自己的別名（例如 /auto satellite_naming on），
+            # 從 SYSTEM_KEYS 自動產生，不用每個系統都手動列一次 "xxx": "xxx"。
+            _AUTO_ALIASES = {**{key: key for key in auto_toggle.SYSTEM_KEYS}, **_AUTO_SHORT_ALIASES}
             _AUTO_USAGE = ("[錯誤] /auto 用法：\n"
                            "  /auto                    查看三套系統目前開關狀態\n"
                            "  /auto <system> on|off    開啟/關閉指定系統\n"

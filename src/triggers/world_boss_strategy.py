@@ -42,6 +42,7 @@ import json
 import re
 from pathlib import Path
 
+import auto_toggle
 import world_boss_progress
 from triggers import actions
 
@@ -50,7 +51,7 @@ from triggers import actions
 # 裡寫死判斷「這支模組是不是世界王」。之後新增別種公告策略模組，只要
 # 也宣告一個 SYSTEM_KEY（並在 auto_toggle.SYSTEM_KEYS 補一個顯示名稱），
 # 開關機制就自動涵蓋，dispatcher 端完全不用改。
-SYSTEM_KEY = "world_boss"
+SYSTEM_KEY = auto_toggle.WORLD_BOSS
 
 _CATALOG_CACHE = None
 
