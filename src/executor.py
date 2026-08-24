@@ -255,3 +255,75 @@ def schedule_every(interval_seconds, text, chat_id=None, reason=None):
             await send_now(text, chat_id=chat_id, reason=reason)
 
     return asyncio.create_task(_loop())
+
+# ============================================================
+# 終端機指令：/delay、/click
+# ============================================================
+# 這兩個指令的邏輯本來就是操作這支檔案裡的狀態（click delay 範圍）跟
+# 函式（click_button_by_text），所以直接放在這裡，main.py 只負責登記
+# 指令前綴＋呼叫，不用自己再重寫一次解析邏輯（比照 scheduler.py 的
+# parse_sched() 已經在用的模式，2026-08-22 熊指出這樣拆才有整體感）。
+# 統一介面：async def handle_xxx_command(text, base_dir, account_id) -> None
+
+_DELAY_USAGE = ("[錯誤] /delay 用法：\n"
+                 "  /delay              查詢目前設定\n"
+                 "  /delay 1.5          設成固定 1.5 秒\n"
+                 "  /delay 0.8-1.5      設成範圍 0.8~1.5 秒（每次隨機）")
+
+
+async def handle_delay_command(text, base_dir, account_id):
+    """按鈕點擊前的反應延遲，套用在所有自動系統共用的 click_button()，
+    不用各自處理。"""
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        lo, hi = get_click_delay_range()
+        if lo >= hi:
+            print(f"[延遲] 按鈕點擊前的延遲目前：固定 {lo} 秒")
+        else:
+            print(f"[延遲] 按鈕點擊前的延遲目前：範圍 {lo}~{hi} 秒（每次隨機）")
+        return
+
+    spec = parts[1].strip()
+    if "-" in spec:
+        bounds = spec.split("-", 1)
+        try:
+            lo, hi = float(bounds[0]), float(bounds[1])
+        except ValueError:
+            print(_DELAY_USAGE)
+            return
+    else:
+        try:
+            lo = hi = float(spec)
+        except ValueError:
+            print(_DELAY_USAGE)
+            return
+
+    if lo < 0:
+        print("[錯誤] 延遲秒數不能是負數")
+    elif hi < lo:
+        print("[錯誤] 範圍上限不能小於下限")
+    else:
+        set_click_delay_range(lo, hi)
+        if lo == hi:
+            print(f"[延遲] ✅ 按鈕點擊前的延遲已設定為固定 {lo} 秒")
+        else:
+            print(f"[延遲] ✅ 按鈕點擊前的延遲已設定為範圍 {lo}~{hi} 秒（每次隨機）")
+
+
+async def handle_click_command(text, base_dir, account_id):
+    """獨立於 /sched 之外的直接點擊：跟一般文字指令一樣立即執行，不需要
+    透過排程機制。用法跟 /sched click:xxx 裡的寫法一致：
+        /click 按鈕文字        → 模糊比對
+        /click row=1,col=2    → 依版面位置比對
+    """
+    if not text.startswith("/click "):
+        print("[錯誤] /click 用法：/click 按鈕文字  或  /click row=1,col=2")
+        return
+    spec = text[len("/click "):].strip()
+    if not spec:
+        print("[錯誤] /click 用法：/click 按鈕文字  或  /click row=1,col=2")
+        return
+    try:
+        await click_button_by_text(spec, reason="手動輸入(終端機)/click")
+    except ValueError as e:
+        print(f"[錯誤] {e}")

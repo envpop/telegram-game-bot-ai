@@ -176,3 +176,36 @@ def decide_action(text, catalog, base_dir, account_id):
         "chat_id": None,
         "reason": f"櫻花窗口開啟，自動連刷：{describe_mode(mode)}（{suspend_note}）",
     }
+
+
+# ============================================================
+# 終端機指令：/sakura
+# ============================================================
+# 統一介面：async def handle_command(text, base_dir, account_id) -> None
+# （跟 executor.py／auto_toggle.py 同一套介面，main.py 用登記表統一
+# 呼叫。模式是帳號個人偏好，見檔頭 load_mode/set_mode 說明）。
+
+_COMMAND_USAGE = ("[錯誤] /sakura 用法：\n"
+                   "  /sakura                        查看目前設定\n"
+                   "  /sakura <tower> <speed>         設定模式\n"
+                   "  <tower>：tower（連續活動塔）／advanced_tower（連續進階活動塔）\n"
+                   "  <speed>：slow（慢速）／medium（中速）／fast（快速）")
+
+
+async def handle_command(text, base_dir, account_id):
+    """設定櫻花窗口自動連刷要打哪種塔、多快打（跟開關本身分開——
+    /auto sakura on|off 是總開關，這裡是選模式）。"""
+    parts = text.split()
+    if len(parts) == 1:
+        mode = load_mode(base_dir, account_id)
+        print(f"[櫻花模式] 目前設定：{describe_mode(mode)}")
+        return
+    if len(parts) == 3:
+        try:
+            set_mode(base_dir, account_id, parts[1], parts[2])
+            mode = load_mode(base_dir, account_id)
+            print(f"[櫻花模式] ✅ 已設定：{describe_mode(mode)}")
+        except ValueError as e:
+            print(f"[錯誤] {e}")
+        return
+    print(_COMMAND_USAGE)

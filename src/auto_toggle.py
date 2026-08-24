@@ -82,3 +82,59 @@ def status_summary(base_dir) -> str:
         state = "✅ 開啟" if is_enabled(base_dir, key) else "🔕 關閉"
         lines.append(f"  {label}（{key}）：{state}")
     return "\n".join(lines)
+
+# ============================================================
+# 終端機指令：/auto
+# ============================================================
+# 統一介面：async def handle_command(text, base_dir, account_id) -> None
+# （跟 executor.py 的 handle_delay_command 等同一套介面，main.py 用登記表
+# 統一呼叫，不用各自處理，2026-08-22 熊指出 SYSTEM_KEYS 都搬進來了、
+# 這個指令的邏輯也該搬過來才有整體感）。
+
+# 短別名 -> 完整 system_key。完整 key 本身一律也能當自己的別名（見
+# _all_aliases()），不用在這裡重複列一次。
+SHORT_ALIASES = {
+    "mtb": MAIN_TOWER_BATTLE,
+    "main_tower": MAIN_TOWER_BATTLE,
+    "wb": WORLD_BOSS,
+    "sat": SATELLITE_TRAINING,
+    "satellite": SATELLITE_TRAINING,
+    "gc": GUARD_CLEAR,
+    "guard": GUARD_CLEAR,
+    "satname": SATELLITE_NAMING,
+    "sat_name": SATELLITE_NAMING,
+    "sakura": SAKURA_AUTO_CHALLENGE,
+}
+
+_USAGE = ("[錯誤] /auto 用法：\n"
+          "  /auto                    查看三套系統目前開關狀態\n"
+          "  /auto <system> on|off    開啟/關閉指定系統\n"
+          "  <system>：mtb（主塔戰鬥）／wb（世界王）／sat（群星計畫）／"
+          "gc（清除守衛）／satname（群星計畫結業命名）／sakura（櫻花窗口自動連刷）")
+
+
+def _all_aliases():
+    # 完整 key 一律可以當自己的別名（例如 /auto satellite_naming on），
+    # 從 SYSTEM_KEYS 自動產生，不用每個系統都手動列一次 "xxx": "xxx"。
+    return {**{key: key for key in SYSTEM_KEYS}, **SHORT_ALIASES}
+
+
+async def handle_command(text, base_dir, account_id):
+    """統一開關：主塔戰鬥／世界王／群星計畫等，所有會自動送出動作的系統
+    共用同一個指令。"""
+    parts = text.split()
+    if len(parts) == 1:
+        print("[開關狀態]\n" + status_summary(base_dir))
+        return
+    if len(parts) == 3 and parts[2] in ("on", "off"):
+        system_key = _all_aliases().get(parts[1])
+        if system_key is None:
+            print(_USAGE)
+            return
+        enabled = parts[2] == "on"
+        set_enabled(base_dir, system_key, enabled)
+        label = SYSTEM_KEYS[system_key]
+        state = "✅ 開啟" if enabled else "🔕 關閉"
+        print(f"[開關] {label}：{state}")
+        return
+    print(_USAGE)

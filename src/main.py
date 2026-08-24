@@ -73,6 +73,23 @@ dispatcher = ActionDispatcher(
 )
 
 
+# 終端機指令登記表：指令前綴 -> 該指令實際邏輯所在模組的 handler。
+# 每個指令的解析/處理邏輯都放在它操作的那個模組裡（見 executor.py 的
+# handle_delay_command/handle_click_command、auto_toggle.py 的
+# handle_command、sakura_strategy.py 的 handle_command），這裡只登記
+# 「哪個前綴對應哪個 handler」，不重新寫一次邏輯——跟 server_triggers
+# 清單同一種「以少控多」的作法（2026-08-22 熊指出 SYSTEM_KEYS 都集中
+# 管理了，指令處理邏輯卻散落在 main.py，缺乏整體感，照這個模式修正）。
+# /sched 風格的指令不在這裡登記，維持原本 scheduler.parse_sched() 那條
+# 路徑（本來就是同一種模式，只是命名前綴比較多樣，不適合用簡單前綴比對）。
+TERMINAL_COMMANDS = {
+    "/delay": executor.handle_delay_command,
+    "/auto": auto_toggle.handle_command,
+    "/sakura": sakura_strategy.handle_command,
+    "/click": executor.handle_click_command,
+}
+
+
 async def terminal_input_loop():
     loop = asyncio.get_event_loop()
     print("💬 可以直接在這裡輸入指令送出遊戲（Enter 送出，Ctrl+C 結束整個程式）")
@@ -85,150 +102,13 @@ async def terminal_input_loop():
         if not text:
             continue
 
-        if text.startswith("/delay"):
-            # 按鈕點擊前的反應延遲，套用在所有自動系統共用的
-            # executor.click_button()，不用各自處理。跟 /click、/sched、
-            # /auto 一樣是終端機輸入的即時指令。
-            # 用法：
-            #   /delay              查詢目前設定
-            #   /delay 1.5          設成固定 1.5 秒
-            #   /delay 0.8-1.5      設成範圍 0.8~1.5 秒（每次點擊隨機抽一個）
-            #   /delay 0            設成 0（不延遲，沒有強制下限）
-            _DELAY_USAGE = ("[錯誤] /delay 用法：\n"
-                             "  /delay              查詢目前設定\n"
-                             "  /delay 1.5          設成固定 1.5 秒\n"
-                             "  /delay 0.8-1.5      設成範圍 0.8~1.5 秒（每次隨機）")
-            parts = text.split(maxsplit=1)
-            if len(parts) == 1:
-                lo, hi = executor.get_click_delay_range()
-                if lo >= hi:
-                    print(f"[延遲] 按鈕點擊前的延遲目前：固定 {lo} 秒")
-                else:
-                    print(f"[延遲] 按鈕點擊前的延遲目前：範圍 {lo}~{hi} 秒（每次隨機）")
-            else:
-                spec = parts[1].strip()
-                if "-" in spec:
-                    bounds = spec.split("-", 1)
-                    try:
-                        lo, hi = float(bounds[0]), float(bounds[1])
-                    except ValueError:
-                        print(_DELAY_USAGE)
-                        continue
-                else:
-                    try:
-                        lo = hi = float(spec)
-                    except ValueError:
-                        print(_DELAY_USAGE)
-                        continue
-
-                if lo < 0:
-                    print("[錯誤] 延遲秒數不能是負數")
-                elif hi < lo:
-                    print("[錯誤] 範圍上限不能小於下限")
-                else:
-                    executor.set_click_delay_range(lo, hi)
-                    if lo == hi:
-                        print(f"[延遲] ✅ 按鈕點擊前的延遲已設定為固定 {lo} 秒")
-                    else:
-                        print(f"[延遲] ✅ 按鈕點擊前的延遲已設定為範圍 {lo}~{hi} 秒（每次隨機）")
-            continue
-
-        if text.startswith("/auto"):
-            # 統一開關：主塔戰鬥／世界王／群星計畫，三套會自動送出動作的
-            # 系統共用同一個指令。跟 /click、/sched 一樣是終端機輸入的
-            # 即時指令，不經過 Telegram（目前架構還沒有 Telegram 端的
-            # 遠端控制通道）。
-            # 用法：
-            #   /auto                       查看三套系統目前開關狀態
-            #   /auto <system> on|off       開啟/關閉指定系統
-            # <system> 可用簡稱（見下面 _AUTO_SHORT_ALIASES），或完整 key
-            # （auto_toggle.SYSTEM_KEYS 裡的任何一個 key 都自動可用，不用
-            # 在這裡重複列一次——新增系統時只要在 auto_toggle.py 加常數，
-            # 這裡完整 key 的部分就自動吃到，只有短別名需要手動加一行）。
-            _AUTO_SHORT_ALIASES = {
-                "mtb": auto_toggle.MAIN_TOWER_BATTLE,
-                "main_tower": auto_toggle.MAIN_TOWER_BATTLE,
-                "wb": auto_toggle.WORLD_BOSS,
-                "sat": auto_toggle.SATELLITE_TRAINING,
-                "satellite": auto_toggle.SATELLITE_TRAINING,
-                "gc": auto_toggle.GUARD_CLEAR,
-                "guard": auto_toggle.GUARD_CLEAR,
-                "satname": auto_toggle.SATELLITE_NAMING,
-                "sat_name": auto_toggle.SATELLITE_NAMING,
-                "sakura": auto_toggle.SAKURA_AUTO_CHALLENGE,
-            }
-            # 完整 key 一律可以當自己的別名（例如 /auto satellite_naming on），
-            # 從 SYSTEM_KEYS 自動產生，不用每個系統都手動列一次 "xxx": "xxx"。
-            _AUTO_ALIASES = {**{key: key for key in auto_toggle.SYSTEM_KEYS}, **_AUTO_SHORT_ALIASES}
-            _AUTO_USAGE = ("[錯誤] /auto 用法：\n"
-                           "  /auto                    查看三套系統目前開關狀態\n"
-                           "  /auto <system> on|off    開啟/關閉指定系統\n"
-                           "  <system>：mtb（主塔戰鬥）／wb（世界王）／sat（群星計畫）／"
-                           "gc（清除守衛）／satname（群星計畫結業命名）／sakura（櫻花窗口自動連刷）")
-            parts = text.split()
-            if len(parts) == 1:
-                print("[開關狀態]\n" + auto_toggle.status_summary(BASE_DIR))
-            elif len(parts) == 3 and parts[2] in ("on", "off"):
-                system_key = _AUTO_ALIASES.get(parts[1])
-                if system_key is None:
-                    print(_AUTO_USAGE)
-                else:
-                    enabled = parts[2] == "on"
-                    auto_toggle.set_enabled(BASE_DIR, system_key, enabled)
-                    label = auto_toggle.SYSTEM_KEYS[system_key]
-                    state = "✅ 開啟" if enabled else "🔕 關閉"
-                    print(f"[開關] {label}：{state}")
-            else:
-                print(_AUTO_USAGE)
-            continue
-
-        if text.startswith("/sakura"):
-            # 設定櫻花窗口自動連刷要打哪種塔、多快打（跟開關本身分開——
-            # /auto sakura on|off 是總開關，這裡是選模式）。共 6 種組合
-            # （2 種指令 × 3 種速度），設定會落地存檔，之後每次觸發都照
-            # 目前設定跑，不用每次都重設。
-            # 用法：
-            #   /sakura                       查看目前設定
-            #   /sakura <tower> <speed>        設定指令種類與速度
-            # <tower>：tower（連續活動塔）／advanced_tower（連續進階活動塔）
-            # <speed>：slow（慢速≈80次）／medium（中速≈140次）／fast（快速≈200次）
-            _SAKURA_USAGE = ("[錯誤] /sakura 用法：\n"
-                              "  /sakura                        查看目前設定\n"
-                              "  /sakura <tower> <speed>         設定模式\n"
-                              "  <tower>：tower（連續活動塔）／advanced_tower（連續進階活動塔）\n"
-                              "  <speed>：slow（慢速）／medium（中速）／fast（快速）")
-            parts = text.split()
-            account_id = _get_account_id()  # 模式是帳號個人偏好，見 sakura_strategy.py 說明
-            if len(parts) == 1:
-                mode = sakura_strategy.load_mode(BASE_DIR, account_id)
-                print(f"[櫻花模式] 目前設定：{sakura_strategy.describe_mode(mode)}")
-            elif len(parts) == 3:
-                try:
-                    sakura_strategy.set_mode(BASE_DIR, account_id, parts[1], parts[2])
-                    mode = sakura_strategy.load_mode(BASE_DIR, account_id)
-                    print(f"[櫻花模式] ✅ 已設定：{sakura_strategy.describe_mode(mode)}")
-                except ValueError as e:
-                    print(f"[錯誤] {e}")
-            else:
-                print(_SAKURA_USAGE)
-            continue
-
-        if text.startswith("/click"):
-            # 獨立於 /sched 之外的直接點擊：跟一般文字指令一樣立即執行，
-            # 不需要透過排程機制。用法跟 /sched click:xxx 裡的寫法一致：
-            #   /click 按鈕文字        → 模糊比對
-            #   /click row=1,col=2    → 依版面位置比對
-            if not text.startswith("/click "):
-                print("[錯誤] /click 用法：/click 按鈕文字  或  /click row=1,col=2")
-                continue
-            spec = text[len("/click "):].strip()
-            if not spec:
-                print("[錯誤] /click 用法：/click 按鈕文字  或  /click row=1,col=2")
-                continue
-            try:
-                await executor.click_button_by_text(spec, reason="手動輸入(終端機)/click")
-            except ValueError as e:
-                print(f"[錯誤] {e}")
+        matched_handler = None
+        for prefix, handler in TERMINAL_COMMANDS.items():
+            if text.startswith(prefix):
+                matched_handler = handler
+                break
+        if matched_handler is not None:
+            await matched_handler(text, BASE_DIR, _get_account_id())
             continue
 
         if text.startswith("/"):
