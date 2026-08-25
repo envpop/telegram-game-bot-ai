@@ -24,7 +24,7 @@ market_tracking_strategy.py 的 market_pulse 是同一種模式：這裡只負�
 用法（main.py，跟 market_tracking 放進同一個 StrategyPipeline）：
 
     battle_status_line = BattleStatusLineStrategy(
-        account_data_dir=BASE_DIR / "data" / str(ACCOUNT_ID),
+        account_data_dir=data_store.account_dir(BASE_DIR, ACCOUNT_ID),
     )
     STRATEGY_PIPELINE = StrategyPipeline([..., battle_status_line])
 """

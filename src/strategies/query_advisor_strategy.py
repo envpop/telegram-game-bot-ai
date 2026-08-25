@@ -29,8 +29,8 @@ world_boss_status.py 進了 _KNOWN_SHAPES），這裡一樣能附加建議，不
 跟 market_tracking 併在同一個 StrategyPipeline 裡）：
 
     query_advisor = QueryAdvisorStrategy(
-        account_data_dir=BASE_DIR / "data" / str(ACCOUNT_ID),
-        common_data_dir=BASE_DIR / "data" / "common",
+        account_data_dir=data_store.account_dir(BASE_DIR, ACCOUNT_ID),
+        common_data_dir=data_store.common_dir(BASE_DIR),
     )
     parsed = query_advisor.observe(parsed, record)
 """

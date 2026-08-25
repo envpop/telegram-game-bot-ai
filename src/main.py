@@ -5,6 +5,7 @@ import auto_toggle
 import monitor
 import executor
 import scheduler
+import data_store
 from triggers import world_boss_strategy
 from triggers import main_tower_battle_strategy
 from triggers import guard_clear_strategy
@@ -198,29 +199,32 @@ async def run():
     # 之後新增其他被動記錄型 strategy，只要加進這個清單，這裡跟 on_record
     # 都不用再改。
     global STRATEGY_PIPELINE
+    account_dir = data_store.account_dir(BASE_DIR, ACCOUNT_ID)
+    common_dir = data_store.common_dir(BASE_DIR)
     market_tracking = MarketTrackingStrategy(
-        account_data_dir=BASE_DIR / "data" / str(ACCOUNT_ID),
-        common_data_dir=BASE_DIR / "data" / "common",
+        account_data_dir=account_dir,
+        common_data_dir=common_dir,
         enable_pulse=False,
     )
-    contract_tracking = ContractTrackingStrategy(common_data_dir=BASE_DIR / "data" / "common")
+    contract_tracking = ContractTrackingStrategy(common_data_dir=common_dir)
     query_advisor = QueryAdvisorStrategy(
-        account_data_dir=BASE_DIR / "data" / str(ACCOUNT_ID),
-        common_data_dir=BASE_DIR / "data" / "common",
+        account_data_dir=account_dir,
+        common_data_dir=common_dir,
     )
     inventory_display = InventoryDisplayStrategy(
         base_dir=BASE_DIR,
         account_id_getter=_get_account_id,   # main.py 已經有這個函式，直接沿用
     )
-    STRATEGY_PIPELINE = StrategyPipeline([market_tracking, contract_tracking, query_advisor, inventory_display])
     battle_status_line = BattleStatusLineStrategy(
-        account_data_dir=BASE_DIR / "data" / str(ACCOUNT_ID),
+        account_data_dir=account_dir,
     )
-    STRATEGY_PIPELINE = StrategyPipeline([market_tracking, contract_tracking, query_advisor, inventory_display, battle_status_line])    
+    STRATEGY_PIPELINE = StrategyPipeline(
+        [market_tracking, contract_tracking, query_advisor, inventory_display, battle_status_line]
+    )
     global CHART_CORRELATION
     CHART_CORRELATION = ChartCorrelationStrategy(
-        common_data_dir=BASE_DIR / "data" / "common",
-        media_dir=BASE_DIR / "data" / "common" / "chart_media",
+        common_data_dir=common_dir,
+        media_dir=common_dir / "chart_media",
     )
     asyncio.create_task(terminal_input_loop())
     await client.run_until_disconnected()

@@ -22,8 +22,8 @@ parser（response_shapes/market_contract.py）保持無狀態，只管文字→
 用法（main.py 裡，每筆 MessageRouter.parse() 的結果都餵一次）：
 
     market_tracking = MarketTrackingStrategy(
-        account_data_dir=BASE_DIR / "data" / str(ACCOUNT_ID),
-        common_data_dir=BASE_DIR / "data" / "common",
+        account_data_dir=data_store.account_dir(BASE_DIR, ACCOUNT_ID),
+        common_data_dir=data_store.common_dir(BASE_DIR),
     )
     parsed = market_tracking.observe(parsed, record)  # 回傳值可能加了 market_pulse
 """
