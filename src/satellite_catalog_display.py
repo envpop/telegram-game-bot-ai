@@ -26,7 +26,7 @@ satellite_catalog_display.py —— 衛星圖鑑「重點顯示」格式化
 
 from collections import defaultdict
 
-MAIN_THRESHOLD = 8
+MAIN_THRESHOLD = 6
 SPECIAL_GOLD_SKILLS = ["星隕", "山嶽", "汲魂", "過載"]
 
 
@@ -161,10 +161,15 @@ def format_satellite_catalog(data):
         "🛰️ 衛星圖鑑摘要（共 %d 隻）" % data.get("total_count", len(satellites)),
         "──────────────",
     ]
+    # 2026-08-17 熊要求區塊順序反過來：最上面放技能少的（其餘，7技以下），
+    # 中間維持特殊金技，最下面放技能多的（主力，≥8技）——這樣不用捲動
+    # 就能同時看到「技能最少」（其餘區塊最上緣）跟「技能最多」（主力區塊
+    # 貼在訊息最下面）兩端。其餘區塊內部排序不變（仍是 7→1 技由多到少，
+    # 單一技能維持在該區塊最下面）。
     for formatter, group_key in (
-        (format_main_list, "main_list"),
-        (format_special_gold, "special_gold"),
         (format_remaining, "remaining"),
+        (format_special_gold, "special_gold"),
+        (format_main_list, "main_list"),
     ):
         text = formatter(groups[group_key])
         if text:

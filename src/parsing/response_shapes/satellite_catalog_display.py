@@ -26,7 +26,7 @@ satellite_catalog_display.py —— 衛星圖鑑「重點顯示」格式化
 
 from collections import defaultdict
 
-MAIN_THRESHOLD = 8
+MAIN_THRESHOLD = 7
 SPECIAL_GOLD_SKILLS = ["星隕", "山嶽", "汲魂", "過載"]
 
 
@@ -63,9 +63,9 @@ def _skill_combo_key(skills):
 
 def classify_satellites(satellites):
     """把衛星分成三組，回傳 dict。"""
-    main_list = []
-    special_gold = []
     remaining = []
+    special_gold = []
+    main_list = []
 
     for sat in satellites:
         skills = sat.get("skills", [])
@@ -82,9 +82,9 @@ def classify_satellites(satellites):
             remaining.append(sat)
 
     return {
-        "main_list": sorted(main_list, key=lambda s: s["index"]),
-        "special_gold": sorted(special_gold, key=lambda t: t[0]["index"]),
         "remaining": remaining,
+        "special_gold": sorted(special_gold, key=lambda t: t[0]["index"]),
+        "main_list": sorted(main_list, key=lambda s: s["index"]),
     }
 
 
