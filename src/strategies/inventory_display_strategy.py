@@ -47,6 +47,7 @@ from pathlib import Path
 
 from inventory_parsers import annotate_special_source
 from battle_status import resolve_element
+from data_store import account_dir
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ class InventoryDisplayStrategy:
     def _load_tops_element_by_matchkey(self, account_id):
         """優先序判斷交給 battle_status.resolve_element()（binding 優先，
         top-level 次之），這裡只負責讀檔跟用 match_key 建索引。"""
-        tops_path = self.base_dir / "data" / str(account_id) / "tops.json"
+        tops_path = account_dir(self.base_dir, account_id) / "tops.json"
         if not tops_path.exists():
             return {}
         try:
