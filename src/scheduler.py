@@ -263,7 +263,7 @@ async def _run_step(step: str, job: "ScheduledJob", reason: str, send_fn: SendFn
 async def _run_job(job: ScheduledJob, send_fn: SendFn, click_fn: Optional[ClickFn] = None):
     try:
         if job.delay_seconds > 0:
-            print(f"[SCHED] {job.job_id} 將於 {job.delay_seconds:.0f} 秒後開始執行：{job.summary}")
+            print(f"[SCHED] {job.job_id} 將於 {job.delay_seconds:.1f} 秒後開始執行：{job.summary}")
             await asyncio.sleep(job.delay_seconds)
 
         total = len(job.once_steps) + len(job.steps) * job.repeat

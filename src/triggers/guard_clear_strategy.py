@@ -10,15 +10,29 @@ guard_clear_strategy.py —— 清護衛自動化決策層
 
 === 設計：不需要額外狀態，天然形成迴圈 ===
 兩個函式都是無狀態的（純函式，不記錄「已經試過幾次」這類東西）——
-迴圈本身是靠「決定要送什麼指令」自然接起來的：
+迴圈本身是靠「決定要送什麼指令」自然接起來的，你只需要手動觸發第一次
+「護衛」查詢，之後全自動跑到清空為止：
 
-    收到查詢結果 → decide_action() 判斷 → 送出「清護衛」或「出戰 N」+「護衛」
-                                                              ↓
-                                                    這個「護衛」指令會讓
-                                                    伺服器再回一則查詢結果，
-                                                    重新觸發 decide_action()
-    收到結果訊息 → decide_after_outcome() 判斷 → 還有剩就送「護衛」重新查
-                                                    → 一樣會重新觸發上面那條
+    護衛狀態（第一次，手動觸發）
+        │（不冷卻，立即送出）
+        ▼
+    decide_action() 判斷 → 出戰 N + 護衛（換陀螺剋制下一顆）
+        │（不冷卻，立即送出）
+        ▼
+    看護衛（換陀螺後重新查詢，這次會剋制）
+        │（不冷卻，立即送出）
+        ▼
+    decide_action() 判斷 → 清護衛
+        │（冷卻 GUARD_CLEAR_COOLDOWN_SECONDS 秒，見下方常數說明）
+        ▼
+    decide_after_outcome() 判斷還有剩 → 護衛（重新查詢）
+        │
+        └──▶ 回到「decide_action() 判斷」那一步，繼續下一顆，LOOP
+
+熊 2026-08-22 反映：全自動連續清護衛時，「清護衛」送出攻擊指令後如果
+立刻重新查詢，會撞到伺服器冷卻——這是整條鏈路裡唯一需要刻意等待的
+轉折點，其他轉折（查詢後換陀螺、換陀螺後查詢、查詢後清護衛）目前沒有
+冷卻問題，維持立即送出。
 
 不用擔心無限迴圈：如果 roster 裡找不到能完美剋制的陀螺，decide_action()
 回傳 mode="none"，不送出任何指令，迴圈在這裡自然停止（不是靠計數器擋，
@@ -48,6 +62,13 @@ from triggers import actions
 from triggers import main_tower_battle_strategy
 
 SYSTEM_KEY = auto_toggle.GUARD_CLEAR
+
+# 「清護衛」送出攻擊指令後，伺服器需要一段冷卻才能再查詢——熊 2026-08-22
+# 反映全自動連續清護衛時，攻擊後立刻重新查詢會撞到冷卻。這是實測觀察值，
+# 不是遊戲公告的數字，如果之後發現還是偶爾撞到，直接調大這個常數即可。
+# 其他轉折（護衛狀態→換陀螺→重新查詢、查詢→清護衛）目前沒有回報冷卻
+# 問題，維持原本立即送出，不用跟著加等待。
+GUARD_CLEAR_COOLDOWN_SECONDS = 1.5
 
 # 護衛戰鬥可能是不利對局（見 main_tower_battle_strategy.py 的說明），
 # 門檻比 mtb 更保守——這是拍腦袋的起始值，不是遊戲內建數字，熊實戰觀察
@@ -158,9 +179,15 @@ def decide(ctx):
         action = decide_after_outcome(ctx.parsed)
         if action["mode"] == "none":
             return actions.none(log=f"[清護衛] {action['reason']}")
-        return actions.send_now(
-            action["commands"][0], reason=action["reason"],
-            log=f"[清護衛] 🔁 {action['reason']}",
+        # 這是「清護衛→看護衛」這個轉折，唯一需要等冷卻的地方（見檔頭
+        # GUARD_CLEAR_COOLDOWN_SECONDS 說明）。用 schedule 而不是立即送出，
+        # 一來天生可取消（真的卡住可以 /sched cancel），二來不會卡住
+        # dispatch() 讓其他訊息等這 1.5 秒才被處理。
+        return actions.schedule(
+            steps=action["commands"], delay_seconds=GUARD_CLEAR_COOLDOWN_SECONDS,
+            reason=action["reason"],
+            log=(f"[清護衛] 🔁 {action['reason']}"
+                 f"（等待 {GUARD_CLEAR_COOLDOWN_SECONDS} 秒冷卻後重新查詢）"),
         )
 
     # shape == "guard_battle_prompt"：沒一擊拆掉，進入按鈕戰鬥，沿用主塔

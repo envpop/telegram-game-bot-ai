@@ -92,7 +92,7 @@ async def _run_schedule(payload):
     )
     job_id = scheduler.schedule(job)
     print(f"⏳ {payload.get('reason')}，已排程 {job_id}"
-          f"（{payload['delay_seconds']:.0f} 秒後執行，"
+          f"（{payload['delay_seconds']:.1f} 秒後執行，"
           f"可用 /sched list 查看、/sched cancel {job_id} 取消）")
 
 
