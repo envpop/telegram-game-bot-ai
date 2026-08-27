@@ -25,13 +25,13 @@ from inventory_parsers import is_my_tops_message, parse_my_tops
 
 # 收藏達到這個數量才轉成精簡模式（UR以上全列＋SSR以下只列數量）。
 # 沒到門檻就原文顯示，不折騰。
-SUMMARY_THRESHOLD = 50
+SUMMARY_THRESHOLD = 120
 
 # rarity_summary 裡，神/UR 已經在 detailed 裡完整列出，這裡統計「其餘」
 # 時要排除，只列 SSR/SR/R/N 這幾種數量。順序照戰力等級高到低排，
 # 符合閱讀直覺；不在這個順序清單裡的稀有度（理論上不會出現）保底放最後。
 _SUMMARY_ORDER = ["SSR", "SR", "R", "N"]
-_DETAILED_RARITIES = {"神", "UR"}
+_DETAILED_RARITIES = {"神", "UR", "EX"}
 
 
 def signature(text: str) -> bool:

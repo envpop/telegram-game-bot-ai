@@ -41,7 +41,7 @@ _TOP_LINE_PATTERN = re.compile(
 _ENHANCEMENT_PATTERN = re.compile(r"\+(\d+)")
 _BIND_TAG_PATTERN = re.compile(r"(💥爆擊綁定|🛡️護盾綁定|🌀回歸綁定)(IV|III|II|I)?")
 
-_DETAILED_RARITIES = {"神", "UR"}
+_DETAILED_RARITIES = {"神", "UR", "EX"}
 
 
 def _normalize_key(s):
