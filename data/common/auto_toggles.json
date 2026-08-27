@@ -1,8 +1,8 @@
 {
-  "satellite_training": false,
-  "main_tower_battle": true,
+  "satellite_training": true,
+  "main_tower_battle": false,
   "guard_clear": true,
-  "satellite_naming": false,
-  "sakura_auto_challenge": true,
+  "satellite_naming": true,
+  "sakura_auto_challenge": false,
   "world_boss": true
 }
