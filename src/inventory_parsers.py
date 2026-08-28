@@ -41,8 +41,6 @@ _TOP_LINE_PATTERN = re.compile(
 _ENHANCEMENT_PATTERN = re.compile(r"\+(\d+)")
 _BIND_TAG_PATTERN = re.compile(r"(💥爆擊綁定|🛡️護盾綁定|🌀回歸綁定)(IV|III|II|I)?")
 
-_DETAILED_RARITIES = {"神", "UR", "EX"}
-
 
 def _normalize_key(s):
     """去除所有空白字元（含全形空白），用來比對「陀螺清單」跟「綁定一覽」
@@ -76,8 +74,14 @@ def _strip_enh_and_bind(name_raw):
 def parse_my_tops(text):
     """解析「我的陀螺」的伺服器回應文字。
 
-    回傳的 detailed 只包含 神／UR 兩種稀有度（含旗下的旋神／旋王／UR精選／鑄造），
-    其餘稀有度（SSR/SR/R/N）只計入 rarity_summary，不留逐筆資料。
+    2026-08-27 修正：detailed 一律收錄「所有」解析成功的陀螺，不分稀有度
+    ——之前這裡只留神／UR、其餘只計數不留逐筆，導致存檔（tops.json）也
+    跟著少了 SSR 以下的個別資料，等於永久遺失。存檔就該保留原始完整內容，
+    要不要精簡是「顯示」的事，不是「解析／存檔」該做的決定（比照衛星的
+    處理方式：inventory_parsers 只管解析存檔，精簡顯示邏輯留在
+    parsing/response_shapes/my_tops.py 的 format_for_display() 自己做）。
+    rarity_summary 還是照算，方便顯示層快速拿到各稀有度數量，不用每次
+    自己重新數 detailed。
     """
     detailed = []
     rarity_summary = {}
@@ -92,9 +96,6 @@ def parse_my_tops(text):
         index, marker, stars, evo_marker, name_raw, rarity, top_type, power = m.groups()
         total_matched += 1
         rarity_summary[rarity] = rarity_summary.get(rarity, 0) + 1
-
-        if rarity not in _DETAILED_RARITIES:
-            continue
 
         if marker == "⭐":
             status = "active"       # 出戰中
