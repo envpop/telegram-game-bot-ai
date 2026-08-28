@@ -7,7 +7,7 @@ parsing/response_shapes/
 === 顯示規則（熊確認）===
     收藏 < 50 顆：原文照樣顯示，不精簡（數量不多，看全部沒負擔）。
     收藏 >= 50 顆：
-        神／UR（含旗下旋神／旋王／UR精選／鑄造）── 全部列出，保留原編號
+        神／EX／UR（含旗下旋神／旋王／UR精選／鑄造）── 全部列出，保留原編號
         SSR／SR／R／N ── 只顯示數量，不列編號
 
     重點限制：編號是「出戰 編號」下指令用的，一定要跟伺服器的原始編號
@@ -18,20 +18,31 @@ parsing/response_shapes/
 
     SSR 以下之所以只留數量：戰力不夠、不會拿來出戰或當建議候選，
     只是「可以再利用（分解/合成之類）的素材庫存」，知道編號沒有實際
-    用途，列出來只會把畫面塞滿、真正重要的神/UR 反而要往下捲很多才看得到。
+    用途，列出來只會把畫面塞滿、真正重要的神/EX/UR 反而要往下捲很多才看得到。
+
+    2026-08-27：新增 EX 稀有度（游戲更新的新陀螺，數值介於 神級 跟 王級
+    之間），熊確認要跟神/UR 一樣全部列出、不能被精簡掉。
+
+=== 精簡是「顯示」的事，不是「解析」的事 ===
+    2026-08-27 修正：parse_my_tops() 現在回傳「全部」解析成功的陀螺
+    （不分稀有度），這裡才是唯一決定「哪些該逐筆列出、哪些只列數量」的
+    地方——之前 parse_my_tops() 自己先把 SSR 以下濾掉，導致存檔
+    （tops.json）也一併遺失那些資料，是真的 bug，不是設計取捨。
+    存檔要留全部原始內容，要不要精簡顯示，是這支檔案自己決定的事，
+    跟衛星的處理方式一致。
 """
 
 from inventory_parsers import is_my_tops_message, parse_my_tops
 
-# 收藏達到這個數量才轉成精簡模式（UR以上全列＋SSR以下只列數量）。
+# 收藏達到這個數量才轉成精簡模式（神/EX/UR 全列＋SSR以下只列數量）。
 # 沒到門檻就原文顯示，不折騰。
-SUMMARY_THRESHOLD = 120
+SUMMARY_THRESHOLD = 50
 
-# rarity_summary 裡，神/UR 已經在 detailed 裡完整列出，這裡統計「其餘」
+# rarity_summary 裡，神/EX/UR 已經在 detailed 裡完整列出，這裡統計「其餘」
 # 時要排除，只列 SSR/SR/R/N 這幾種數量。順序照戰力等級高到低排，
 # 符合閱讀直覺；不在這個順序清單裡的稀有度（理論上不會出現）保底放最後。
 _SUMMARY_ORDER = ["SSR", "SR", "R", "N"]
-_DETAILED_RARITIES = {"神", "UR", "EX"}
+_DETAILED_RARITIES = {"神", "EX", "UR"}
 
 
 def signature(text: str) -> bool:
@@ -78,9 +89,10 @@ def format_for_display(parsed: dict) -> str:
     detailed = parsed.get("detailed") or []
     rarity_summary = parsed.get("rarity_summary") or {}
 
-    lines = [f"🧰 你的陀螺收藏（共 {total} 顆，UR以上全列・SSR以下只列數量）", "──────────────"]
+    lines = [f"🧰 你的陀螺收藏（共 {total} 顆，神/EX/UR 全列・SSR以下只列數量）", "──────────────"]
     for t in detailed:
-        lines.append(_format_top_line(t))
+        if t.get("rarity") in _DETAILED_RARITIES:
+            lines.append(_format_top_line(t))
 
     other_counts = {r: c for r, c in rarity_summary.items() if r not in _DETAILED_RARITIES}
     if other_counts:
