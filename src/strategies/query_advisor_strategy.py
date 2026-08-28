@@ -57,10 +57,26 @@ class QueryAdvisorStrategy:
         tops_path = self.account_data_dir / "tops.json"
         cast_path = self.account_data_dir / "cast_tops_catalog.json"
         special_path = self.common_data_dir / "special_tops_catalog.json"
+        '''on_record_callback 錯誤的debug用：
+        print("[DEBUG QueryAdvisor]")
+        print(f"  account_data_dir = {self.account_data_dir}")
+        print(f"  common_data_dir  = {self.common_data_dir}")
+        print(f"  tops_path        = {tops_path}")
+        print(f"  tops_exists      = {tops_path.exists()}")
+    
+        with tops_path.open(encoding="utf-8") as f:  
+            tops_data = json.load(f)
 
-        with tops_path.open(encoding="utf-8") as f:
+        print(f"  tops_type        = {type(tops_data).__name__}")
+        print(
+            f"  tops_keys        = "
+            f"{list(tops_data.keys()) if isinstance(tops_data, dict) else '<not dict>'}"
+        )
+            raw_roster = tops_data["detailed"] '''
+
+        with tops_path.open(encoding="utf-8") as f:     ##這兩行為原本程式，如果要用上方debug，這邊要遮掉。  
             raw_roster = json.load(f)["detailed"]
-
+            
         cast_catalog = {}
         if cast_path.exists():
             with cast_path.open(encoding="utf-8") as f:
@@ -108,17 +124,16 @@ class QueryAdvisorStrategy:
 
 
 if __name__ == "__main__":
-    import shutil
-
     test_base = Path(__file__).parent / "_test_base"
-    account_dir = test_base / "data" / "envpop"
-    common_dir = test_base / "data" / "common"
-    account_dir.mkdir(parents=True, exist_ok=True)
-    common_dir.mkdir(parents=True, exist_ok=True)
+    test_account_id = "envpop"
 
-    shutil.copy("/mnt/user-data/uploads/tops.json", account_dir / "tops.json")
+    test_account_dir = data_store.account_dir(test_base, test_account_id)
+    test_common_dir = data_store.common_dir(test_base)
 
-    strategy = QueryAdvisorStrategy(account_data_dir=account_dir, common_data_dir=common_dir)
+    strategy = QueryAdvisorStrategy(
+        account_data_dir=test_account_dir,
+        common_data_dir=test_common_dir,
+    )
 
     raw_message = """📊 @envpop 的陀螺戰績
 ──────────────

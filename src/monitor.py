@@ -70,7 +70,7 @@ ON_RECORD_CALLBACK = None
 # 記得把這個也設成 False：
 #     monitor.ON_RECORD_CALLBACK = on_record
 #     monitor.PRINT_ENABLED = False
-PRINT_ENABLED = True
+PRINT_ENABLED = False
 
 # ============================================================
 # 時間與路徑
@@ -297,7 +297,13 @@ async def process_message(message, event_type):
         try:
             await ON_RECORD_CALLBACK(record)
         except Exception as e:
-            print(f"[WARN] 外部 callback 執行失敗（不影響 monitor 本身）：chat={chat_id} msg={message.id} 錯誤：{e}")
+            import traceback
+
+            print(
+                f"[WARN] 外部 callback 執行失敗（不影響 monitor 本身）："
+                f"chat={chat_id} msg={message.id} 錯誤：{e}"
+            )
+            traceback.print_exc()
 
     if PRINT_ENABLED:
         if ARGS.watch:
