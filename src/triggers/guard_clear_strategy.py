@@ -54,6 +54,29 @@ main_tower_battle_strategy.decide_action()，只是傳更保守的門檻參數
 - 換陀螺跟送出「清護衛」之間有極短空檔，如果剛好這段期間護衛重新增生
   換了屬性，可能打到不完美剋制的護衛、進入戰鬥模式——這不是 bug，是
   遊戲機制本身的限制，戰鬥模式本來就能處理，只是多打一場。
+
+=== 2026-08-27 修正：兩個會卡住/無限循環的情況 ===
+1. 「無法判斷目前出戰陀螺屬性」會卡住：新陀螺剛更新、圖鑑（roster）
+   還沒帶上正確的 element/type 時，_score_top() 拿 None 去跟弱點屬性
+   比對，靜靜算成「不符合」，跟「真的不剋制」長得一模一樣，沒辦法分辨。
+   現在改成明確檢查 element/type 是不是 None，是的話直接回傳
+   mode="none" 並在 reason 講清楚「屬性未知」，不會跟「真的沒有剋制
+   陀螺」搞混，也不會拿不完整的資料硬做判斷。
+
+2. 「roster 沒更新會整個亂掉、無限循環」：decide_action() 原本每次都
+   相信 roster 裡 status=="active" 的欄位，但這個欄位只有查一次「我的
+   陀螺」才會更新，清護衛過程中自動送出的「出戰 N」不會回頭更新它。
+   結果是：只要清護衛期間換過一次陀螺，roster 記錄的「目前出戰」就
+   永遠停在換陀螺前那一隻，之後每一輪都誤判成「還沒換到剋制陀螺」，
+   重複送出同一個切換指令，形成無限循環。
+
+   修法：模組層級記住「這一輪清護衛期間，我們自己切換到了哪一隻」
+   （_assumed_active_index），之後判斷「目前出戰陀螺」時優先採信這個
+   假設值，不是每次都重新相信 roster 的 status 欄位。這代表這兩個函式
+   不再是完全無狀態的純函式（檔頭原本這樣寫），但狀態只在單一 process
+   內、單一清護衛 session 內有意義，護衛全部清空（cleared_all）時會
+   重置，不會跨 session 殘留、也不需要跨帳號區分（這支 bot 一次只服務
+   一個帳號，見 telegram_client.py 的帳號切換機制）。
 """
 
 import auto_toggle
@@ -75,6 +98,33 @@ GUARD_CLEAR_COOLDOWN_SECONDS = 1.5
 # 覺得不準直接改這裡即可。
 GUARD_CRITICAL_HP_RATIO = 0.25
 GUARD_SHIELD_PHASE_THRESHOLD = 300
+
+# 記住「這一輪清護衛期間，我們自己切換到了哪一隻陀螺」，見檔頭
+# 2026-08-27 修正說明。cleared_all 時重置，None 代表「還沒自己切換過，
+# 相信 roster 的 status 欄位」。
+_assumed_active_index = None
+
+# 連續遇到「資料本身有問題」（屬性未知、roster 找不到出戰陀螺、結果訊息
+# 缺欄位）幾次之後，主動重新查一次「我的陀螺」＋「綁定一覽」刷新 roster，
+# 而不是一直卡著等熊發現。「沒有完美剋制的陀螺」不算問題（那是正常的
+# 業務判斷，不是資料壞掉），不會累加這個計數。
+PROBLEM_REFRESH_THRESHOLD = 2
+_consecutive_problem_count = 0
+
+
+def _note_outcome(is_problem: bool) -> bool:
+    """記錄這次判斷是不是「資料有問題」，回傳是否已經達到刷新門檻
+    （達到的話呼叫端要改成送出刷新指令，並且這個函式已經把計數器歸零，
+    不用呼叫端自己再歸零一次）。"""
+    global _consecutive_problem_count
+    if not is_problem:
+        _consecutive_problem_count = 0
+        return False
+    _consecutive_problem_count += 1
+    if _consecutive_problem_count >= PROBLEM_REFRESH_THRESHOLD:
+        _consecutive_problem_count = 0
+        return True
+    return False
 
 
 def _score_top(top, next_target):
@@ -100,19 +150,43 @@ def decide_action(parsed, roster):
 
     next_target = structured.get("next_target")
     if not next_target:
-        return {"mode": "none", "commands": [], "reason": "查詢結果沒有下一顆的弱點資訊，無法判斷"}
+        return {"mode": "none", "commands": [], "problem": True,
+                "reason": "查詢結果沒有下一顆的弱點資訊，無法判斷"}
 
     if not roster:
-        return {"mode": "none", "commands": [], "reason": "沒有 roster 資料（tops.json 不存在或尚未查過陀螺收藏），無法判斷"}
+        return {"mode": "none", "commands": [], "problem": True,
+                "reason": "沒有 roster 資料（tops.json 不存在或尚未查過陀螺收藏），無法判斷"}
+
+    global _assumed_active_index
 
     active_top = next((t for t in roster if t.get("status") == "active"), None)
+    # 如果這一輪清護衛期間我們自己切換過陀螺，roster 的 status 欄位在
+    # 下次「我的陀螺」重新查詢前都不會反映這次切換——優先採信自己記住
+    # 的假設值，不然會一直誤判成「還沒換到剋制陀螺」形成無限循環
+    # （見檔頭 2026-08-27 修正說明）。
+    if _assumed_active_index is not None:
+        assumed_top = next((t for t in roster if t.get("index") == _assumed_active_index), None)
+        if assumed_top is not None:
+            active_top = assumed_top
+
     if active_top is None:
-        return {"mode": "none", "commands": [], "reason": "roster 裡找不到目前出戰的陀螺，無法判斷"}
+        return {"mode": "none", "commands": [], "problem": True,
+                "reason": "roster 裡找不到目前出戰的陀螺，無法判斷"}
+
+    if active_top.get("element") is None or active_top.get("type") is None:
+        return {
+            "mode": "none",
+            "commands": [],
+            "problem": True,
+            "reason": (f"目前出戰「{active_top.get('name')}」的屬性／類型未知"
+                       "（圖鑑可能還沒更新這隻陀螺的資料），不自動出手，避免用不完整的資料誤判"),
+        }
 
     if _score_top(active_top, next_target) == 2:
         return {
             "mode": "attack",
             "commands": ["清護衛"],
+            "problem": False,
             "reason": f"目前出戰「{active_top.get('name')}」完美剋制下一顆護衛，自動打清護衛",
         }
 
@@ -121,12 +195,23 @@ def decide_action(parsed, roster):
         return {
             "mode": "none",
             "commands": [],
+            "problem": False,  # 真的沒有剋制陀螺，是正常業務判斷，不是資料壞掉
             "reason": "手上沒有完美剋制下一顆護衛的陀螺，僅顯示建議，不自動出手",
         }
 
+    if best[0].get("element") is None or best[0].get("type") is None:
+        return {
+            "mode": "none",
+            "commands": [],
+            "problem": True,
+            "reason": f"建議的陀螺「{best[0].get('name')}」屬性／類型未知，不自動切換，避免用不完整的資料誤判",
+        }
+
+    _assumed_active_index = best[0]["index"]
     return {
         "mode": "switch_and_requery",
         "commands": [f"出戰 {best[0]['index']}", "護衛"],
+        "problem": False,
         "reason": f"切換為「{best[0]['name']}」（完美剋制下一顆護衛），切換後重新查詢確認",
     }
 
@@ -136,20 +221,42 @@ def decide_after_outcome(parsed):
 
     回傳 {"mode": "requery"|"none", "commands": [...], "reason": str}
     """
+    global _assumed_active_index
+
     structured = parsed.get("structured") or {}
 
     if structured.get("cleared_all"):
-        return {"mode": "none", "commands": [], "reason": "護衛已全數清空，清護衛迴圈結束"}
+        # 本輪清護衛結束，重置切換假設——下一輪（下次護衛重新增生）
+        # 重新相信 roster 的 status 欄位，不要延續這一輪的假設值。
+        _assumed_active_index = None
+        return {"mode": "none", "commands": [], "problem": False,
+                "reason": "護衛已全數清空，清護衛迴圈結束"}
 
     remaining = structured.get("remaining")
     if remaining is not None and remaining > 0:
         return {
             "mode": "requery",
             "commands": ["護衛"],
+            "problem": False,
             "reason": f"還剩 {remaining} 顆，重新查詢繼續清",
         }
 
-    return {"mode": "none", "commands": [], "reason": "結果訊息沒有剩餘數量資訊，無法判斷是否繼續，交給你手動查看"}
+    return {"mode": "none", "commands": [], "problem": True,
+            "reason": "結果訊息沒有剩餘數量資訊，無法判斷是否繼續，交給你手動查看"}
+
+
+def _refresh_roster_action(reason_prefix: str):
+    """連續遇到資料問題達到門檻時觸發：重新查一次「我的陀螺」＋「綁定一覽」
+    刷新 roster，最後再補一次「護衛」讓迴圈接著跑下去（不然刷新完資料，
+    但沒有東西觸發下一次判斷，迴圈就停在這裡了）。順便清掉切換假設
+    ——反正馬上就有全新的 roster 資料，不需要延續舊的假設值。"""
+    global _assumed_active_index
+    _assumed_active_index = None
+    return actions.send_sequence(
+        ["我的陀螺", "綁定一覽", "護衛"], interval_seconds=2,
+        reason=f"{reason_prefix}，主動刷新陀螺圖鑑後重新查詢",
+        log=f"[清護衛] 🔄 {reason_prefix}，懷疑圖鑑資料過期，重新查詢「我的陀螺」＋「綁定一覽」刷新後繼續",
+    )
 
 
 def decide(ctx):
@@ -168,6 +275,10 @@ def decide(ctx):
         action = decide_action(ctx.parsed, ctx.roster)
         if action is None:
             return None  # 不是「還有護衛」的查詢結果，交給其他 trigger
+        if _note_outcome(action["problem"]):
+            return _refresh_roster_action(
+                f"連續 {PROBLEM_REFRESH_THRESHOLD} 次判斷不出來（最近一次：{action['reason']}）"
+            )
         if action["mode"] == "none":
             return actions.none(log=f"[清護衛] {action['reason']}")
         return actions.send_sequence(
@@ -177,6 +288,10 @@ def decide(ctx):
 
     if shape == "guard_clear_outcome":
         action = decide_after_outcome(ctx.parsed)
+        if _note_outcome(action["problem"]):
+            return _refresh_roster_action(
+                f"連續 {PROBLEM_REFRESH_THRESHOLD} 次判斷不出來（最近一次：{action['reason']}）"
+            )
         if action["mode"] == "none":
             return actions.none(log=f"[清護衛] {action['reason']}")
         # 這是「清護衛→看護衛」這個轉折，唯一需要等冷卻的地方（見檔頭
