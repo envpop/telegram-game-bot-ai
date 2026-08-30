@@ -63,7 +63,7 @@ dispatcher = ActionDispatcher(
     base_dir=BASE_DIR,
     rules_file=REACTION_RULES_FILE,
     account_id_getter=_get_account_id,
-    announcement_strategies=[world_boss_strategy, sakura_strategy],
+    announcement_strategies=[world_boss_strategy, sakura_strategy, guard_clear_strategy.announcement_adapter],
     server_triggers=[
         world_boss_strategy,
         main_tower_battle_strategy,

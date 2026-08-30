@@ -79,10 +79,14 @@ main_tower_battle_strategy.decide_action()，只是傳更保守的門檻參數
    一個帳號，見 telegram_client.py 的帳號切換機制）。
 """
 
+import re
+import time
+
 import auto_toggle
 from query_reactor import recommend_for_guard_target
 from triggers import actions
 from triggers import main_tower_battle_strategy
+from triggers import runtime_state
 
 SYSTEM_KEY = auto_toggle.GUARD_CLEAR
 
@@ -91,7 +95,7 @@ SYSTEM_KEY = auto_toggle.GUARD_CLEAR
 # 不是遊戲公告的數字，如果之後發現還是偶爾撞到，直接調大這個常數即可。
 # 其他轉折（護衛狀態→換陀螺→重新查詢、查詢→清護衛）目前沒有回報冷卻
 # 問題，維持原本立即送出，不用跟著加等待。
-GUARD_CLEAR_COOLDOWN_SECONDS = 1.5
+GUARD_CLEAR_COOLDOWN_SECONDS = 2.5
 
 # 護衛戰鬥可能是不利對局（見 main_tower_battle_strategy.py 的說明），
 # 門檻比 mtb 更保守——這是拍腦袋的起始值，不是遊戲內建數字，熊實戰觀察
@@ -110,6 +114,84 @@ _assumed_active_index = None
 # 業務判斷，不是資料壞掉），不會累加這個計數。
 PROBLEM_REFRESH_THRESHOLD = 2
 _consecutive_problem_count = 0
+
+# ============================================================
+# 2026-08-29 新增：全自動觸發（公告頻道 + 跨頻道偵測）
+# ============================================================
+# 之前這一整套自動清空邏輯需要熊手動送出第一次「護衛」才會開始跑。
+# 現在補上自動觸發來源，全部指向同一件事：「送出護衛」讓上面那個
+# LOOP 開始跑，不重新發明判斷邏輯。
+#
+# 觸發來源有兩類：
+#   1. 公告頻道（世界王頻道）：王降臨帶護衛／王中途召喚（共生異變甦醒）／
+#      護衛重新編組（太久沒清，屬性重置）／護衛重新增生（清不夠快，補一顆）。
+#      這四種訊息熊反映「補血」跟「屬性重置」這兩種最難預測，不知道什麼
+#      時候出現——所以乾脆四種全部當觸發來源，不用特別挑，反正重複觸發
+#      會被下面的「session 進行中」旗標擋掉，不會有副作用。
+#   2. 打王時的戰鬥結果（跨頻道，出現在摸熊神社私訊，不是公告頻道）：
+#      戰鬥結果尾端如果帶「🛰️ 衛星護衛 N 顆還在」，代表王還有護衛沒清，
+#      即使沒看到公告也能發現，不會漏接。
+#
+# 「session 進行中」旗標：避免同一隻王的護衛被重複啟動好幾輪清護衛
+# LOOP 互相打架（熊 2026-08-29 反映的顧慮）。用 runtime_state 的
+# set_until/is_active，順便當一個逾時保險——正常情況 cleared_all 會
+# 主動清掉這個旗標，但萬一什麼地方卡住导致 cleared_all 沒有觸發，
+# 旗標最多撐 GUARD_SESSION_TIMEOUT_SECONDS 就會自動過期，不會永久卡死
+# 之後的新觸發。
+GUARD_SESSION_TIMEOUT_SECONDS = 20 * 60  # 20 分鐘，拍腦袋的保險值，不是遊戲機制數字
+_SESSION_STATE_KEY = "guard_clear_session_active"
+
+
+def _mark_session_active():
+    runtime_state.set_until(_SESSION_STATE_KEY, None, time.time() + GUARD_SESSION_TIMEOUT_SECONDS)
+
+
+def is_session_active() -> bool:
+    return runtime_state.is_active(_SESSION_STATE_KEY, None)
+
+
+def _clear_session():
+    runtime_state.clear(_SESSION_STATE_KEY, None)
+
+
+# 公告頻道的判斷條件——四種訊息共用同一組動作（送出「護衛」），
+# 不需要分別處理，湊在一起用一個 pattern 清單簡化判斷。
+_ANNOUNCEMENT_TRIGGER_PATTERNS = [
+    re.compile(r"召喚了\s*\d+\s*顆【衛星護衛】"),   # 王降臨帶護衛／中途召喚（共生異變甦醒），結尾文字相同
+    re.compile(r"護衛陣重新編組"),                    # 太久沒清，屬性重置
+    re.compile(r"護衛陣重新增生了一顆"),              # 清得不夠快，補一顆
+    re.compile(r"把能量回灌給"),                      # 哨衛幫王回血（熊反映最難預測，獨立比對避免漏接）
+]
+
+# 跨頻道偵測：打王戰鬥結果裡如果帶這行，代表還有護衛沒清——不管這則
+# 訊息被分類成什麼 shape，都直接比對原始文字，不用等專門的 shape 解析。
+_GUARD_STILL_UP_PATTERN = re.compile(r"衛星護衛\s*(\d+)\s*顆還在")
+
+
+def load_catalog(base_dir):
+    """跟其他 announcement 模組介面一致，這裡不需要真的圖鑑資料，回傳空字典。"""
+    return {}
+
+
+def decide_action_from_announcement(text, catalog, base_dir, account_id):
+    """公告頻道版本的 decide_action，介面跟 world_boss_strategy／sakura_strategy
+    的 announcement 版本一致：(text, catalog, base_dir, account_id) -> {"mode": ...}。
+    main.py 的 announcement_strategies 清單要用這個名字掛進去（不是
+    decide_action，那個是給 server 端 guard_status shape 用的，兩者介面
+    不一樣，分開命名避免搞混）。"""
+    if is_session_active():
+        return {"mode": None}  # 已經有一輪在跑，讓現有的輪詢週期自己處理，不重複啟動
+
+    if not any(p.search(text) for p in _ANNOUNCEMENT_TRIGGER_PATTERNS):
+        return {"mode": None}
+
+    _mark_session_active()
+    return {
+        "mode": "now",
+        "command": "護衛",
+        "chat_id": None,
+        "reason": "偵測到護衛相關公告（王降臨/中途召喚/重新編組/重新增生/補血），自動開始清護衛",
+    }
 
 
 def _note_outcome(is_problem: bool) -> bool:
@@ -147,6 +229,11 @@ def decide_action(parsed, roster):
     structured = parsed.get("structured") or {}
     if structured.get("type") != "active":
         return None  # 不是「還有護衛」的查詢結果（可能是已散去通知），不歸這裡管
+
+    # 收到有效的查詢結果，代表這一輪清護衛還在正常進行中，延長 session
+    # 逾時時間（見檔頭 GUARD_SESSION_TIMEOUT_SECONDS 說明）——不管接下來
+    # 判斷出的是攻擊、換陀螺還是「資料有問題」，都算是活著的訊號。
+    _mark_session_active()
 
     next_target = structured.get("next_target")
     if not next_target:
@@ -228,12 +315,16 @@ def decide_after_outcome(parsed):
     if structured.get("cleared_all"):
         # 本輪清護衛結束，重置切換假設——下一輪（下次護衛重新增生）
         # 重新相信 roster 的 status 欄位，不要延續這一輪的假設值。
+        # session 旗標也一起清掉，讓下一次公告觸發可以正常啟動新的一輪
+        # （不清的話要等 GUARD_SESSION_TIMEOUT_SECONDS 逾時才會解除）。
         _assumed_active_index = None
+        _clear_session()
         return {"mode": "none", "commands": [], "problem": False,
                 "reason": "護衛已全數清空，清護衛迴圈結束"}
 
     remaining = structured.get("remaining")
     if remaining is not None and remaining > 0:
+        _mark_session_active()  # 還有進度，延長 session 逾時時間
         return {
             "mode": "requery",
             "commands": ["護衛"],
@@ -264,10 +355,22 @@ def decide(ctx):
     三種 shape 的判斷邏輯本身沒有變，只是把「這則訊息歸不歸我管」的判斷
     搬進來，跟原本散在 action_dispatcher.py 裡的行為完全一致（包括每個
     分支各自的 stop 語意）。"""
-    shape = ctx.shape
-    if shape not in ("guard_status", "guard_clear_outcome", "guard_battle_prompt"):
+    # 2026-08-29 新增：跨頻道偵測，不管這則訊息被分類成什麼 shape（打王
+    # 戰鬥結果目前沒有專門的 shape，會落在「尚未分類」），只要文字裡帶
+    # 「衛星護衛 N 顆還在」，就代表王還有護衛沒清，直接送出「護衛」開始
+    # 清（如果已經有一輪在跑，is_session_active() 擋掉，不重複啟動）。
+    # 放在 shape 判斷之前，因為這則訊息本來就不會落在 guard_status 那
+    # 三種 shape 裡，要在被那個 gate 擋掉之前先檢查。
+    if ctx.shape not in ("guard_status", "guard_clear_outcome", "guard_battle_prompt"):
+        if ctx.is_enabled(SYSTEM_KEY) and not is_session_active() and _GUARD_STILL_UP_PATTERN.search(ctx.text):
+            _mark_session_active()
+            return actions.send_now(
+                "護衛", reason="打王時發現護衛還在（跨頻道偵測），自動開始清護衛",
+                log="[清護衛] 🔍 打王時發現護衛還在，自動開始清護衛",
+            )
         return None
 
+    shape = ctx.shape
     if not ctx.is_enabled(SYSTEM_KEY):
         return None  # 關閉時不吃掉訊息，維持原行為（放行給其他 trigger／reaction_rules）
 
@@ -325,3 +428,19 @@ def decide(ctx):
         log=f"[護衛戰鬥] ⚠️ 策略無法判斷要選哪個戰術按鈕：{ctx.text[:40]}...",
         stop=True,
     )
+
+# ============================================================
+# 公告頻道用的轉接器
+# ============================================================
+# main.py 的 announcement_strategies 清單統一呼叫 strategy.decide_action(...)，
+# 但這支檔案的 decide_action(parsed, roster) 已經是給 server 端 guard_status
+# shape 用的既有介面，兩邊簽名不相容、不能共用同一個名字。用一個小轉接器
+# 包一層，把公告版本的 decide_action_from_announcement 用 decide_action
+# 這個屬性名稱暴露出去，main.py 掛的是這個轉接器，不是整支模組本身。
+class _AnnouncementAdapter:
+    SYSTEM_KEY = SYSTEM_KEY
+    load_catalog = staticmethod(load_catalog)
+    decide_action = staticmethod(decide_action_from_announcement)
+
+
+announcement_adapter = _AnnouncementAdapter()

@@ -115,6 +115,12 @@ class ActionDispatcher:
             print("[公告觸發] ⏸️ 自動觸發暫停中（櫻花窗口期間），略過本則公告判斷")
             return False
 
+        # 2026-08-29 修正：改成「每個策略各自判斷、命中的都執行」，不再是
+        # 「第一個命中就停」。世界王的公告常常同時帶著「王降臨」跟「召喚
+        # 護衛」兩件事在同一則訊息裡，這兩個判斷（要不要打王、要不要清
+        # 護衛）本來就互相獨立，不該因為其中一個策略先判斷出動作，
+        # 就讓另一個策略完全沒機會被檢查到（熊 2026-08-29 反映）。
+        handled_any = False
         for strategy in self.announcement_strategies:
             system_key = getattr(strategy, "SYSTEM_KEY", None)
             if system_key and not auto_toggle.is_enabled(self.base_dir, system_key):
@@ -125,8 +131,8 @@ class ActionDispatcher:
             action = strategy.decide_action(text, catalog, self.base_dir, self.account_id)
             if action["mode"] == "now":
                 await executor.send_now(action["command"], chat_id=action["chat_id"], reason=action["reason"])
-                return True
-            if action["mode"] == "scheduled":
+                handled_any = True
+            elif action["mode"] == "scheduled":
                 # repeat/interval 是選填（world_boss 目前只用單次延遲送出，
                 # 不用設；sakura_strategy 用來排一長串重複指令，見該檔說明）。
                 job = scheduler.ScheduledJob(
@@ -140,8 +146,8 @@ class ActionDispatcher:
                 job_id = scheduler.schedule(job)
                 print(f"[公告觸發] ⏳ {action['reason']}，已排程 {job_id}"
                       f"（可用 /sched list 查看目前狀態、/sched cancel {job_id} 取消）")
-                return True
-        return False  # 沒有任何策略模組判斷出動作，純資訊公告
+                handled_any = True
+        return handled_any  # 沒有任何策略模組判斷出動作，純資訊公告
 
     # ---- 陀螺／衛星／背包／道具說明：四種資料同步都交給 profile_sync_strategy 統一處理 ----
     # 這支不算進 server_triggers 清單——它是單一職責的持久化協調者（owns all

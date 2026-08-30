@@ -272,7 +272,7 @@ async def _run_job(job: ScheduledJob, send_fn: SendFn, click_fn: Optional[ClickF
         async def _execute(step: str) -> bool:
             """回傳 True 表示成功，False 表示失敗（呼叫端要中止剩餘步驟）。"""
             nonlocal i
-            reason = job.reason or f"排程({job.job_id}) {i + 1}/{total}"
+            reason = f"{job.reason}（{i + 1}/{total}）" if job.reason else f"排程({job.job_id}) {i + 1}/{total}"
             try:
                 await _run_step(step, job, reason, send_fn, click_fn)
             except asyncio.CancelledError:
