@@ -163,9 +163,14 @@ _ANNOUNCEMENT_TRIGGER_PATTERNS = [
     re.compile(r"把能量回灌給"),                      # 哨衛幫王回血（熊反映最難預測，獨立比對避免漏接）
 ]
 
-# 跨頻道偵測：打王戰鬥結果裡如果帶這行，代表還有護衛沒清——不管這則
-# 訊息被分類成什麼 shape，都直接比對原始文字，不用等專門的 shape 解析。
-_GUARD_STILL_UP_PATTERN = re.compile(r"衛星護衛\s*(\d+)\s*顆還在")
+# 跨頻道偵測：打王戰鬥結果／手動查詢「世界王」的回覆裡如果帶這行，代表
+# 還有護衛沒清——不管這則訊息被分類成什麼 shape，都直接比對原始文字，
+# 不用等專門的 shape 解析。兩種來源格式不一樣：
+#   打王戰鬥結果：「衛星護衛 5 顆還在」（純數字）
+#   手動查詢世界王：「衛星護衛 6/6 顆還在」（目前/總數）
+# 用 (?:/\d+)? 讓斜線總數部分變成可有可無，兩種格式都吃得到，只取第一個
+# 數字（目前還剩幾顆）當判斷依據。
+_GUARD_STILL_UP_PATTERN = re.compile(r"衛星護衛\s*(\d+)(?:/\d+)?\s*顆還在")
 
 
 def load_catalog(base_dir):
@@ -362,12 +367,14 @@ def decide(ctx):
     # 放在 shape 判斷之前，因為這則訊息本來就不會落在 guard_status 那
     # 三種 shape 裡，要在被那個 gate 擋掉之前先檢查。
     if ctx.shape not in ("guard_status", "guard_clear_outcome", "guard_battle_prompt"):
-        if ctx.is_enabled(SYSTEM_KEY) and not is_session_active() and _GUARD_STILL_UP_PATTERN.search(ctx.text):
-            _mark_session_active()
-            return actions.send_now(
-                "護衛", reason="打王時發現護衛還在（跨頻道偵測），自動開始清護衛",
-                log="[清護衛] 🔍 打王時發現護衛還在，自動開始清護衛",
-            )
+        if ctx.is_enabled(SYSTEM_KEY) and not is_session_active():
+            match = _GUARD_STILL_UP_PATTERN.search(ctx.text)
+            if match and int(match.group(1)) > 0:
+                _mark_session_active()
+                return actions.send_now(
+                    "護衛", reason="發現護衛還在（跨頻道偵測，例如打王結果或手動查詢世界王），自動開始清護衛",
+                    log="[清護衛] 🔍 發現護衛還在，自動開始清護衛",
+                )
         return None
 
     shape = ctx.shape

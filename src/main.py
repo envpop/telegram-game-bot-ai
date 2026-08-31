@@ -65,9 +65,13 @@ dispatcher = ActionDispatcher(
     account_id_getter=_get_account_id,
     announcement_strategies=[world_boss_strategy, sakura_strategy, guard_clear_strategy.announcement_adapter],
     server_triggers=[
+        # guard_clear 排在 world_boss 前面：手動查詢「世界王」的回覆同時
+        # 帶著王的資訊跟護衛資訊，如果 world_boss 先判斷出「該補刀」而
+        # 出手，會讓清單停在那裡、護衛的判斷完全輪不到（熊 2026-08-29
+        # 反映：先清護衛再打王比較好，這裡先把順序喬對）。
+        guard_clear_strategy,
         world_boss_strategy,
         main_tower_battle_strategy,
-        guard_clear_strategy,
         satellite_training_strategy,
         satellite_naming_strategy,
     ],
