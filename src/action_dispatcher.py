@@ -1,9 +1,7 @@
 """action_dispatcher.py —— 根據 parser 結果協調各自動化處理器。"""
 
 import auto_toggle
-import executor
 import profile_sync_strategy
-import scheduler
 from reaction_rules import ReactionRuleEngine
 from triggers import actions
 from triggers.context import TriggerContext
@@ -130,20 +128,24 @@ class ActionDispatcher:
             catalog = strategy.load_catalog(self.base_dir)
             action = strategy.decide_action(text, catalog, self.base_dir, self.account_id)
             if action["mode"] == "now":
-                await executor.send_now(action["command"], chat_id=action["chat_id"], reason=action["reason"])
+                trigger_action = actions.send_now(
+                    action["command"],
+                    chat_id=action["chat_id"],
+                    reason=action["reason"],
+                )
+                await actions.execute(trigger_action)
                 handled_any = True
+
             elif action["mode"] == "scheduled":
                 # repeat/interval 是選填（world_boss 目前只用單次延遲送出，
                 # 不用設；sakura_strategy 用來排一長串重複指令，見該檔說明）。
-                job = scheduler.ScheduledJob(
+                trigger_action = actions.schedule(
                     steps=[action["command"]],
                     delay_seconds=action.get("delay_seconds", 0.0),
-                    repeat=action.get("repeat", 1),
-                    interval=action.get("interval", (0.0, 0.0)),
                     chat_id=action.get("chat_id"),
                     reason=action.get("reason"),
                 )
-                job_id = scheduler.schedule(job)
+                await actions.execute(trigger_action)
                 print(f"[公告觸發] ⏳ {action['reason']}，已排程 {job_id}"
                       f"（可用 /sched list 查看目前狀態、/sched cancel {job_id} 取消）")
                 handled_any = True
@@ -160,7 +162,10 @@ class ActionDispatcher:
             return False
         print(sync_result["log"])
         if sync_result["commands"]:
-            await executor.send_sequence(
-                sync_result["commands"], interval_seconds=2, reason=sync_result["commands_reason"]
+            action = actions.send_sequence(
+                sync_result["commands"],
+                interval_seconds=2,
+                reason=sync_result["commands_reason"],
             )
+            await actions.execute(action)
         return True
