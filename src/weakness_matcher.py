@@ -38,10 +38,14 @@ RE_TRANSITION = re.compile(
 )
 
 # 王名(出現公告): 👹 今日世界王【第 5 階】:深海級・幽壑（攻擊型・🟢木屬性）
+#              👹 今日世界王:潮痕級・黑瞳（攻擊型・🟡土屬性）
+#   —— 每天重生的第一隻王(潮痕級/base tier)沒有「【第 X 階】」這個階數標記，
+#   2026-09-02 用實際訊息樣本確認過，階數括號要設成可有可無，不然 base tier
+#   王的名字整個抓不到。
 # 跟 world_boss_catalog.json 的 boss_spawn.name_pattern 是同一種格式，
 # 這裡獨立寫一份 regex 是因為 weakness_matcher 是純解析模組，不依賴 catalog 檔案；
 # 如果之後兩邊的格式分岔了，要記得一起改。
-RE_BOSS_NAME_SPAWN = re.compile(r"今日世界王【第\s*\d+\s*階】[:：]\s*([^（]+)（")
+RE_BOSS_NAME_SPAWN = re.compile(r"今日世界王(?:【第\s*\d+\s*階】)?[:：]\s*([^（]+)（")
 
 # 王名(相位轉變公告): 🌗💥「深海級・幽壑」的形體崩解重組……
 # 同樣對應 world_boss_catalog.json 的 phase_transition.name_pattern。

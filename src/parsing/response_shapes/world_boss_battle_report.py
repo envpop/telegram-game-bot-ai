@@ -20,6 +20,14 @@ world_boss_status 的標頭 regex。
 刻意「以少控多」:中間逐刀明細(R1/R3 那幾行連段技、暴擊、群體壓制等)不解析,
 只抓跟「下一步該怎麼打」有關的欄位(弱點、護衛)跟結果數字(傷害、次數)。
 
+=== 2026-09-02 補充 ===
+原始樣本裡「王減傷 52%」這個數字完全沒被解析出來，只抓了護衛存活數。這次
+補上減傷% 的抓取。跟 world_boss_status.py 那次改版不同：那次改版是拿 138
+則實際訊息全部驗證過；這裡因為手上沒有新一批的實際戰報樣本，只能對照
+docstring 留下的這則舊樣本驗證 regex 抓得到，還沒有像查詢回覆那樣大量驗證
+過格式穩不穩定(例如減傷 0% 時、或某些戰報版本可能不帶這段文字的情況)。
+之後如果拿到新的戰報樣本，記得回頭再核對一次。
+
 signature(): 判斷一段文字是不是這個 shape
 parse(): 抽成結構化資料
 format_for_display(): 組出精簡摘要文字
@@ -40,6 +48,11 @@ RE_DAMAGE_DEALT = re.compile(r"你這次造成\s*([\d,]+)\s*傷害")
 # 所以獨立一條 regex,不重用 weakness_matcher.RE_GUARDS_ALIVE。
 RE_GUARDS_NO_SLASH = re.compile(r"衛星護衛\s*(\d+)\s*顆還在")
 
+# 減傷% 獨立一條 regex，不跟上面那條綁在同一個 match 裡——手上沒有新戰報
+# 樣本能確認「顆還在」後面的標點/間距一定跟 docstring 舊樣本一模一樣，拆開
+# 各自比對，就算其中一邊格式跑掉，另一邊還是抓得到，不會整組一起失敗。
+RE_GUARD_DAMAGE_REDUCTION = re.compile(r"王減傷\s*(\d+)%")
+
 RE_DAILY_COUNT = re.compile(r"今日\s*(\d+)/(\d+)\s*次")
 RE_ACCUMULATED = re.compile(r"本王累積\s*([\d,]+)\s*傷害")
 
@@ -52,6 +65,7 @@ def parse(text):
     header = RE_HEADER.search(text)
     weakness = weakness_matcher.WeaknessParser.parse(text)
     guards_m = RE_GUARDS_NO_SLASH.search(text)
+    reduction_m = RE_GUARD_DAMAGE_REDUCTION.search(text)
     damage_m = RE_DAMAGE_DEALT.search(text)
     daily_m = RE_DAILY_COUNT.search(text)
     accum_m = RE_ACCUMULATED.search(text)
@@ -64,6 +78,7 @@ def parse(text):
         "damage_dealt": int(damage_m.group(1).replace(",", "")) if damage_m else None,
         "has_guards": (int(guards_m.group(1)) > 0) if guards_m else None,
         "guards_remaining": int(guards_m.group(1)) if guards_m else None,
+        "guard_damage_reduction_pct": int(reduction_m.group(1)) if reduction_m else None,
         "daily_count": int(daily_m.group(1)) if daily_m else None,
         "daily_limit": int(daily_m.group(2)) if daily_m else None,
         "accumulated_damage": int(accum_m.group(1).replace(",", "")) if accum_m else None,
@@ -85,7 +100,8 @@ def format_for_display(parsed):
         lines.append(f"💥 這次造成 {parsed['damage_dealt']} 傷害")
 
     if parsed["has_guards"] is True:
-        lines.append(f"🛰️ 護衛：還有 {parsed['guards_remaining']} 顆")
+        reduction = f"，王減傷 {parsed['guard_damage_reduction_pct']}%" if parsed["guard_damage_reduction_pct"] is not None else ""
+        lines.append(f"🛰️ 護衛：還有 {parsed['guards_remaining']} 顆{reduction}")
     elif parsed["has_guards"] is False:
         lines.append("🛰️ 護衛：已清空")
 

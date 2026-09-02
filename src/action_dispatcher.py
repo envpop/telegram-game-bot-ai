@@ -146,8 +146,9 @@ class ActionDispatcher:
                     reason=action.get("reason"),
                 )
                 await actions.execute(trigger_action)
-                print(f"[公告觸發] ⏳ {action['reason']}，已排程 {job_id}"
-                      f"（可用 /sched list 查看目前狀態、/sched cancel {job_id} 取消）")
+                # 排程完成訊息（含 job_id）已由 triggers/actions.py 的
+                # _run_schedule 印出，這裡不重複印，避免 job_id 拿不到的問題
+                # （2026-09-02 修正：dispatcher 沒有管道拿到 job_id，execute() 設計上回傳 None）
                 handled_any = True
         return handled_any  # 沒有任何策略模組判斷出動作，純資訊公告
 
