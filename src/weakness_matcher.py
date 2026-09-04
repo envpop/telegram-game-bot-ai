@@ -171,6 +171,61 @@ class TopSelector:
         return candidates[:top_n]
 
     @staticmethod
+    def recommend_pair(tops: List[dict], weakness: WeaknessState, rules: dict,
+                        catalog: Optional[dict] = None):
+        """
+        依世界王弱點屬性選出「主手+副手」搭配：
+          主手：屬性符合弱點、戰力最高（邏輯跟 recommend() 一致）
+          副手：屬性要能「相生」主手屬性（查 rules["element_generate"]：
+                找哪個屬性生主手屬性），同樣戰力優先。
+
+        2026-09-03 熊確認的規則：副手屬性生主手屬性才有「相生共鳴 +2%」
+        加成——這跟 sub_top_confirmation.py 用真實樣本驗證過的遊戲機制
+        一致，不是憑空假設。rules 是 data/common/element_type_rules.json
+        載入後的 dict，這裡不做檔案 I/O，維持本模組「純解析」原則，
+        跟 recommend() 的 catalog 參數是同一種設計理由。
+
+        回傳 (main_pick, sub_pick)，兩者都可能是 None：
+          - 手上沒有符合弱點屬性的陀螺 -> (None, None)，副手選不選都沒意義
+          - 有主手，但手上沒有能相生主手屬性的陀螺 -> (main_pick, None)，
+            不會為了硬選一顆而選不相生的陀螺充數——「找不到」誠實回報
+            None，要不要保留現有副手由呼叫端決定，不在這裡替它決定。
+        """
+        main_candidates = [
+            t for t in tops
+            if resolve_element_any(t, catalog) == weakness.current_element
+        ]
+        if not main_candidates:
+            return None, None
+
+        main_candidates.sort(
+            key=lambda t: (t.get("power") or 0, t.get("enhancement") or 0),
+            reverse=True,
+        )
+        main_pick = main_candidates[0]
+
+        generating_element = None
+        for src, dst in rules.get("element_generate", {}).items():
+            if dst == weakness.current_element:
+                generating_element = src
+                break
+
+        sub_pick = None
+        if generating_element:
+            sub_candidates = [
+                t for t in tops
+                if t is not main_pick and resolve_element_any(t, catalog) == generating_element
+            ]
+            if sub_candidates:
+                sub_candidates.sort(
+                    key=lambda t: (t.get("power") or 0, t.get("enhancement") or 0),
+                    reverse=True,
+                )
+                sub_pick = sub_candidates[0]
+
+        return main_pick, sub_pick
+
+    @staticmethod
     def missing_element_warning(tops: List[dict], weakness: WeaknessState,
                                  catalog: Optional[dict] = None) -> Optional[str]:
         """

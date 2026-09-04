@@ -158,14 +158,18 @@ def handle_query_reply(message: str, roster: list) -> Optional[str]:
     # 世界王：弱點屬性已由訊息直接寫明，沿用既有 weakness_matcher
     weakness = WeaknessParser.parse(message)
     if weakness:
-        picks = TopSelector.recommend(roster, weakness)[:RECOMMEND_TOP_N]
-        warning = TopSelector.missing_element_warning(roster, weakness)
+        rules = load_json(RULES_PATH)
+        main_pick, sub_pick = TopSelector.recommend_pair(roster, weakness, rules)
         lines = [f"🔮 世界王弱點屬性：{weakness.current_element}屬性"]
-        if warning:
+        if not main_pick:
+            warning = TopSelector.missing_element_warning(roster, weakness)
             lines.append(warning)
         else:
-            for p in picks:
-                lines.append(_format_pick_line(p))
+            lines.append("主手：" + _format_pick_line(main_pick))
+            if sub_pick:
+                lines.append(f"副手：{_format_pick_line(sub_pick)}（相生主手，可觸發相生共鳴+2%）")
+            else:
+                lines.append("副手：手上沒有能相生主手屬性的陀螺，維持目前副手設定")
         return "\n".join(lines)
 
     # 陀螺戰績：反查主塔目前樓層的王，套用五行+類型雙重剋制建議
