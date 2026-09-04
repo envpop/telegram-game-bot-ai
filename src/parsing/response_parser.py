@@ -46,7 +46,12 @@ from .response_shapes import active_top_confirmation
 from .response_shapes import sub_top_confirmation
 from .response_shapes import sub_top_status
 from .response_shapes import satellite_training_complete
-
+from .response_shapes import furnace_watch
+from .response_shapes import furnace_feed
+from .response_shapes import furnace_awakening_announcement
+from .response_shapes import furnace_watch_blocked
+from .response_shapes import furnace_overview
+from .response_shapes import furnace_feed_blocked
 
 _ROUTE_MAP = {
     ServerSubtype.RESPONSE: "server_response_flow",
@@ -82,6 +87,12 @@ _KNOWN_SHAPES = [
     sub_top_confirmation,
     sub_top_status,
     satellite_training_complete,
+    furnace_watch,
+    furnace_feed,
+    furnace_awakening_announcement,
+    furnace_watch_blocked,
+    furnace_overview,
+    furnace_feed_blocked,
 ]
 
 
