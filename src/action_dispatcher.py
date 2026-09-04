@@ -1,7 +1,9 @@
 """action_dispatcher.py —— 根據 parser 結果協調各自動化處理器。"""
 
 import auto_toggle
+import executor
 import profile_sync_strategy
+import scheduler
 from reaction_rules import ReactionRuleEngine
 from triggers import actions
 from triggers.context import TriggerContext
@@ -89,14 +91,6 @@ class ActionDispatcher:
             awaiting_training_reply=was_awaiting_training_reply,
         )
 
-        if runtime_state.is_active("suspend_triggers"):
-            # 全域暫停中（目前唯一來源：櫻花窗口期間，見 sakura_strategy.py）。
-            # 略過整個自動判斷鏈（觸發清單＋兜底的 reaction_rules），避免
-            # 跟窗口期間排定的一長串連刷指令互相干擾。profile_sync 在上面
-            # 已經跑過、不受影響——純資料同步沒有主動送指令的風險。
-            print(f"[dispatch] ⏸️ 自動觸發暫停中（櫻花窗口期間），略過本則訊息判斷：chat={ctx.chat_id}")
-            return
-
         for trigger in self.server_triggers:
             action = trigger.decide(ctx)
             if action is None:
@@ -109,16 +103,6 @@ class ActionDispatcher:
 
     # ---- 公告頻道（世界王等）----
     async def _handle_announcement(self, text):
-        if runtime_state.is_active("suspend_triggers"):
-            print("[公告觸發] ⏸️ 自動觸發暫停中（櫻花窗口期間），略過本則公告判斷")
-            return False
-
-        # 2026-08-29 修正：改成「每個策略各自判斷、命中的都執行」，不再是
-        # 「第一個命中就停」。世界王的公告常常同時帶著「王降臨」跟「召喚
-        # 護衛」兩件事在同一則訊息裡，這兩個判斷（要不要打王、要不要清
-        # 護衛）本來就互相獨立，不該因為其中一個策略先判斷出動作，
-        # 就讓另一個策略完全沒機會被檢查到（熊 2026-08-29 反映）。
-        handled_any = False
         for strategy in self.announcement_strategies:
             system_key = getattr(strategy, "SYSTEM_KEY", None)
             if system_key and not auto_toggle.is_enabled(self.base_dir, system_key):
@@ -128,29 +112,23 @@ class ActionDispatcher:
             catalog = strategy.load_catalog(self.base_dir)
             action = strategy.decide_action(text, catalog, self.base_dir, self.account_id)
             if action["mode"] == "now":
-                trigger_action = actions.send_now(
-                    action["command"],
+                await executor.send_now(action["command"], chat_id=action["chat_id"], reason=action["reason"])
+                return True
+            if action["mode"] == "scheduled":
+                job = scheduler.ScheduledJob(
+                    steps=[action["command"]],
+                    delay_seconds=action["delay_seconds"],
+                    repeat=action["repeat"],
+                    interval=action["interval"],
                     chat_id=action["chat_id"],
                     reason=action["reason"],
                 )
-                await actions.execute(trigger_action)
-                handled_any = True
-
-            elif action["mode"] == "scheduled":
-                # repeat/interval 是選填（world_boss 目前只用單次延遲送出，
-                # 不用設；sakura_strategy 用來排一長串重複指令，見該檔說明）。
-                trigger_action = actions.schedule(
-                    steps=[action["command"]],
-                    delay_seconds=action.get("delay_seconds", 0.0),
-                    chat_id=action.get("chat_id"),
-                    reason=action.get("reason"),
-                )
-                await actions.execute(trigger_action)
-                # 排程完成訊息（含 job_id）已由 triggers/actions.py 的
-                # _run_schedule 印出，這裡不重複印，避免 job_id 拿不到的問題
-                # （2026-09-02 修正：dispatcher 沒有管道拿到 job_id，execute() 設計上回傳 None）
-                handled_any = True
-        return handled_any  # 沒有任何策略模組判斷出動作，純資訊公告
+                job_id = scheduler.schedule(job)
+                print(f"[公告觸發] ⏳ {action['reason']}，已排程 {job_id}"
+                      f"（{action['delay_seconds']:.0f} 秒後執行，"
+                      f"可用 /sched list 查看、/sched cancel {job_id} 取消）")
+                return True
+        return False  # 沒有任何策略模組判斷出動作，純資訊公告
 
     # ---- 陀螺／衛星／背包／道具說明：四種資料同步都交給 profile_sync_strategy 統一處理 ----
     # 這支不算進 server_triggers 清單——它是單一職責的持久化協調者（owns all
@@ -163,10 +141,7 @@ class ActionDispatcher:
             return False
         print(sync_result["log"])
         if sync_result["commands"]:
-            action = actions.send_sequence(
-                sync_result["commands"],
-                interval_seconds=2,
-                reason=sync_result["commands_reason"],
+            await executor.send_sequence(
+                sync_result["commands"], interval_seconds=2, reason=sync_result["commands_reason"]
             )
-            await actions.execute(action)
         return True
