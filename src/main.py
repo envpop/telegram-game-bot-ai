@@ -12,6 +12,7 @@ from triggers import guard_clear_strategy
 from triggers import satellite_training_strategy
 from triggers import satellite_naming_strategy
 from triggers import sakura_strategy
+from triggers import furnace_cycle_strategy
 from parser import MessageRouter
 from log_maintenance import run_maintenance
 from display_formatter import format_display_line
@@ -24,6 +25,7 @@ from strategies.contract_tracking_strategy import ContractTrackingStrategy
 from message_buffer import MessageBuffer
 from strategies.inventory_display_strategy import InventoryDisplayStrategy
 from strategies.battle_status_line_strategy import BattleStatusLineStrategy
+import world_boss_mode
 
 import os
 os.system("title MOMOBearBot - main")
@@ -70,6 +72,7 @@ dispatcher = ActionDispatcher(
         # 出手，會讓清單停在那裡、護衛的判斷完全輪不到（熊 2026-08-29
         # 反映：先清護衛再打王比較好，這裡先把順序喬對）。
         guard_clear_strategy,
+        furnace_cycle_strategy,
         world_boss_strategy,
         main_tower_battle_strategy,
         satellite_training_strategy,
@@ -92,6 +95,7 @@ TERMINAL_COMMANDS = {
     "/auto": auto_toggle.handle_command,
     "/sakura": sakura_strategy.handle_command,
     "/click": executor.handle_click_command,
+    "/wbmode":world_boss_mode.handle_command,
 }
 
 
