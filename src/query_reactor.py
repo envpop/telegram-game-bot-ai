@@ -159,8 +159,9 @@ def handle_query_reply(message: str, roster: list) -> Optional[str]:
     weakness = WeaknessParser.parse(message)
     if weakness:
         rules = load_json(RULES_PATH)
-        main_pick, sub_pick = TopSelector.recommend_pair(roster, weakness, rules)
-        lines = [f"🔮 世界王弱點屬性：{weakness.current_element}屬性"]
+        main_pick, sub_pick = TopSelector.recommend_pair(roster, weakness, rules, boss_type=weakness.boss_type)
+        type_note = f"／{weakness.boss_type}" if weakness.boss_type else ""
+        lines = [f"🔮 世界王弱點屬性：{weakness.current_element}屬性{type_note}"]
         if not main_pick:
             warning = TopSelector.missing_element_warning(roster, weakness)
             lines.append(warning)

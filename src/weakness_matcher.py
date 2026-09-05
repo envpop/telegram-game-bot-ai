@@ -47,6 +47,13 @@ RE_TRANSITION = re.compile(
 # 如果之後兩邊的格式分岔了，要記得一起改。
 RE_BOSS_NAME_SPAWN = re.compile(r"今日世界王(?:【第\s*\d+\s*階】)?[:：]\s*([^（]+)（")
 
+# 王的類型(攻擊型/防禦型/持久型/平衡型)，同一行(標頭)的另一個欄位。
+# 2026-09-03 補上：這個欄位在 dataclass 裡本來就有(boss_type)，但
+# "initial"(剛出現)這個分支之前沒有抓，導致一般查詢時 boss_type 永遠是
+# None，類型剋制判斷用不到——現在補齊，跟 RE_BOSS_NAME_SPAWN 共用同一種
+# 「階數括號可有可無」的容錯。
+RE_BOSS_TYPE_SPAWN = re.compile(r"今日世界王(?:【第\s*\d+\s*階】)?[:：]\s*[^（]+（(?P<type>[^・]+)・")
+
 # 王名(相位轉變公告): 🌗💥「深海級・幽壑」的形體崩解重組……
 # 同樣對應 world_boss_catalog.json 的 phase_transition.name_pattern。
 RE_BOSS_NAME_TRANSITION = re.compile(r"「([^」]+)」的形體崩解重組")
@@ -113,8 +120,10 @@ class WeaknessParser:
         if m:
             phase_m = RE_PHASE.search(message)
             name_m = RE_BOSS_NAME_SPAWN.search(message)
+            type_m = RE_BOSS_TYPE_SPAWN.search(message)
             return WeaknessState(
                 current_element=m.group(1),
+                boss_type=type_m.group("type") if type_m else None,
                 source="initial",
                 boss_name=name_m.group(1) if name_m else None,
                 phase=int(phase_m.group(1)) if phase_m else None,
@@ -172,24 +181,32 @@ class TopSelector:
 
     @staticmethod
     def recommend_pair(tops: List[dict], weakness: WeaknessState, rules: dict,
-                        catalog: Optional[dict] = None):
+                        boss_type: Optional[str] = None, catalog: Optional[dict] = None):
         """
-        依世界王弱點屬性選出「主手+副手」搭配：
-          主手：屬性符合弱點、戰力最高（邏輯跟 recommend() 一致）
-          副手：屬性要能「相生」主手屬性（查 rules["element_generate"]：
-                找哪個屬性生主手屬性），同樣戰力優先。
+        依世界王弱點屬性+類型，選出「主手+副手」搭配：
 
-        2026-09-03 熊確認的規則：副手屬性生主手屬性才有「相生共鳴 +2%」
-        加成——這跟 sub_top_confirmation.py 用真實樣本驗證過的遊戲機制
-        一致，不是憑空假設。rules 是 data/common/element_type_rules.json
-        載入後的 dict，這裡不做檔案 I/O，維持本模組「純解析」原則，
-        跟 recommend() 的 catalog 參數是同一種設計理由。
+          主手 對王：
+            五行要剋制 —— 屬性符合弱點(weakness.current_element)，這點
+                          本來就對，沿用不變。
+            類型也要剋制 —— 查 rules["type_control"]，攻>持>防>攻 三角，
+                          找哪個類型剋制王的類型。王是「平衡型」(三角
+                          沒涵蓋，見 rules["type_no_counter"])時，優先選
+                          攻擊型。
+          副手 對主手：
+            五行要生 —— 查 rules["element_generate"]，找哪個屬性生主手
+                        屬性，沿用不變。
+            類型要互補 —— 主手是攻擊型就選防禦型副手，主手不是攻擊型就
+                        選攻擊型副手，以取得最高傷害的可能。
+                        (2026-09-03 熊確認的規則)
 
-        回傳 (main_pick, sub_pick)，兩者都可能是 None：
-          - 手上沒有符合弱點屬性的陀螺 -> (None, None)，副手選不選都沒意義
-          - 有主手，但手上沒有能相生主手屬性的陀螺 -> (main_pick, None)，
-            不會為了硬選一顆而選不相生的陀螺充數——「找不到」誠實回報
-            None，要不要保留現有副手由呼叫端決定，不在這裡替它決定。
+        屬性/五行是硬性條件(候選名單先用它篩選)，類型是排序時的優先加分
+        (同屬性候選裡，類型對的排前面，同樣戰力優先)——這樣即使手上找不到
+        「屬性又對、類型也對」的完美陀螺，也不會整組挑不出東西，跟之前
+        「挑手上最好的」的既有原則一致，只是現在的「最好」多考慮了類型。
+
+        找不到主手就整組回傳 None,None（弱點屬性手上完全沒有能打的陀螺，
+        副手怎麼選都沒意義）。副手找不到相生屬性的候選時，回傳 sub=None，
+        不強塞一顆不相生的陀螺進去。
         """
         main_candidates = [
             t for t in tops
@@ -198,8 +215,25 @@ class TopSelector:
         if not main_candidates:
             return None, None
 
+        type_control = rules.get("type_control", {})
+        no_counter_types = set(rules.get("type_no_counter", {}).get("types", []))
+
+        def _type_that_beats(target_type):
+            if not target_type or target_type in no_counter_types:
+                return None
+            for attacker, defender in type_control.items():
+                if defender == target_type:
+                    return attacker
+            return None
+
+        desired_main_type = _type_that_beats(boss_type) or "攻擊型"
+
         main_candidates.sort(
-            key=lambda t: (t.get("power") or 0, t.get("enhancement") or 0),
+            key=lambda t: (
+                t.get("type") == desired_main_type,
+                t.get("power") or 0,
+                t.get("enhancement") or 0,
+            ),
             reverse=True,
         )
         main_pick = main_candidates[0]
@@ -217,8 +251,13 @@ class TopSelector:
                 if t is not main_pick and resolve_element_any(t, catalog) == generating_element
             ]
             if sub_candidates:
+                desired_sub_type = "防禦型" if main_pick.get("type") == "攻擊型" else "攻擊型"
                 sub_candidates.sort(
-                    key=lambda t: (t.get("power") or 0, t.get("enhancement") or 0),
+                    key=lambda t: (
+                        t.get("type") == desired_sub_type,
+                        t.get("power") or 0,
+                        t.get("enhancement") or 0,
+                    ),
                     reverse=True,
                 )
                 sub_pick = sub_candidates[0]

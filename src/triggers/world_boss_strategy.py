@@ -43,7 +43,9 @@ import re
 from pathlib import Path
 
 import auto_toggle
+import world_boss_mode
 import world_boss_progress
+from parsing.response_shapes import world_boss_status
 from triggers import actions
 
 # 給 action_dispatcher.py 的公告策略迴圈用：迴圈用 getattr(strategy,
@@ -89,6 +91,26 @@ def _extract_name(text, pattern):
 _NO_ACTION = {"mode": None, "delay_seconds": None, "command": None, "chat_id": None, "reason": None}
 
 
+def _current_mode(text, base_dir, account_id):
+    """回傳 (mode, reason)。stage/ticket_bounty 只有在這則文字符合
+    world_boss_status 的格式(帶完整「今日世界王」區塊)時才抓得到——
+    目前確認「出現」「查詢回覆」都有這個區塊，可以重用 world_boss_status
+    的解析結果，不用在這裡重寫一次 regex(共用資料語意，不重複解析邏輯)。
+
+    「變身」(phase_transition，「形體崩解重組」格式)目前手上沒有實際
+    樣本能確認訊息裡有沒有階數/商會懸賞資訊，保守起見抓不到就當作
+    stage=None、沒有懸賞，讓 determine_mode() 用預設值判斷——之後拿到
+    實際樣本，如果變身訊息其實也帶得到這些欄位，再回頭補。
+    """
+    stage = None
+    has_ticket_bounty = False
+    if world_boss_status.signature(text):
+        parsed = world_boss_status.parse(text)
+        stage = parsed.get("stage")
+        has_ticket_bounty = parsed.get("ticket_bounty", False)
+    return world_boss_mode.determine_mode(base_dir, account_id, stage, has_ticket_bounty)
+
+
 def decide_action(text, catalog, base_dir, account_id):
     """公告頻道（出現/變身/結束/戰況/護衛）事件的判斷入口。"""
     event = classify_message(text, catalog)
@@ -111,6 +133,10 @@ def decide_action(text, catalog, base_dir, account_id):
             return _NO_ACTION
         if world_boss_progress.has_hit_today(base_dir, account_id, name):
             return _NO_ACTION
+        mode, mode_reason = _current_mode(text, base_dir, account_id)
+        if mode != world_boss_mode.TOUCH:
+            print(f"[世界王] 「{name}」判定為 {mode}（{mode_reason}），不是 touch，先不摸一下（等 {mode} 的行為邏輯補上）")
+            return _NO_ACTION
         world_boss_progress.mark_hit(base_dir, account_id, name)
         return {"mode": "now", "delay_seconds": None, "command": command, "chat_id": chat_id,
                 "reason": f"世界王「{name}」剛出現，今天還沒打過，立刻討伐"}
@@ -121,6 +147,10 @@ def decide_action(text, catalog, base_dir, account_id):
             print(f"[世界王] ⚠️ 偵測到變身訊息，但抓不到王的名字，跳過判斷：{text[:40]}...")
             return _NO_ACTION
         if world_boss_progress.has_hit_today(base_dir, account_id, name):
+            return _NO_ACTION
+        mode, mode_reason = _current_mode(text, base_dir, account_id)
+        if mode != world_boss_mode.TOUCH:
+            print(f"[世界王] 「{name}」判定為 {mode}（{mode_reason}），不是 touch，先不摸一下（等 {mode} 的行為邏輯補上）")
             return _NO_ACTION
         delay = event.get("cooldown_seconds", 60)
         world_boss_progress.mark_hit(base_dir, account_id, name)
@@ -155,6 +185,11 @@ def decide_action_from_status_query(text, catalog, base_dir, account_id):
 
     if query["alive_check_pattern"] in text:
         return _NO_ACTION  # 王已經死了，補不了
+
+    mode, mode_reason = _current_mode(text, base_dir, account_id)
+    if mode != world_boss_mode.TOUCH:
+        print(f"[世界王] 「{name}」判定為 {mode}（{mode_reason}），不是 touch，先不補刀（等 {mode} 的行為邏輯補上）")
+        return _NO_ACTION
 
     world_boss_progress.mark_hit(base_dir, account_id, name)
     return {
