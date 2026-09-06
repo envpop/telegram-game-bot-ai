@@ -79,6 +79,7 @@ main_tower_battle_strategy.decide_action()，只是傳更保守的門檻參數
    一個帳號，見 telegram_client.py 的帳號切換機制）。
 """
 
+import asyncio
 import re
 import time
 
@@ -142,6 +143,27 @@ GUARD_SESSION_TIMEOUT_SECONDS = 20 * 60  # 20 分鐘，拍腦袋的保險值，�
 _SESSION_STATE_KEY = "guard_clear_session_active"
 
 
+_session_end_callbacks = []
+
+
+def on_session_end(callback):
+    """讓其他模組登記「護衛清空/session 結束時要通知我」的回呼函式。
+
+    2026-09-05 新增：世界王的爐火模式(furnace_loop_strategy.py)換手時
+    會跟這裡搶同一個「目前出戰陣容」，熊確認的解法是「furnace_loop 先
+    排隊，等護衛清完再回頭處理」——但這支模組不該反過來認識
+    furnace_loop_strategy(職責方向會變得混亂，之後換一套清護衛邏輯也
+    要跟著改 import)，所以用通用的回呼註冊，這支模組只負責「結束了，
+    通知所有登記過的人」，不知道、也不需要知道誰在聽。
+
+    callback 是 async function，簽名 callback() -> None，不吃參數、
+    不回傳有意義的值——用 asyncio.create_task() 觸發，不會阻塞這支模組
+    自己的判斷流程，也不會因為某個 callback 出錯而讓清護衛本身跟著壞掉
+    (fire-and-forget)。
+    """
+    _session_end_callbacks.append(callback)
+
+
 def _mark_session_active():
     runtime_state.set_until(_SESSION_STATE_KEY, None, time.time() + GUARD_SESSION_TIMEOUT_SECONDS)
 
@@ -152,6 +174,8 @@ def is_session_active() -> bool:
 
 def _clear_session():
     runtime_state.clear(_SESSION_STATE_KEY, None)
+    for callback in _session_end_callbacks:
+        asyncio.create_task(callback())
 
 
 # 公告頻道的判斷條件——四種訊息共用同一組動作（送出「護衛」），

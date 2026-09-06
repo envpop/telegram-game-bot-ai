@@ -47,6 +47,8 @@ import world_boss_mode
 import world_boss_progress
 from parsing.response_shapes import world_boss_status
 from triggers import actions
+from triggers import furnace_loop_strategy
+from triggers import guard_clear_strategy
 
 # 給 action_dispatcher.py 的公告策略迴圈用：迴圈用 getattr(strategy,
 # "SYSTEM_KEY", None) 通用地查 auto_toggle 開關狀態，不用在 dispatcher
@@ -134,6 +136,19 @@ def decide_action(text, catalog, base_dir, account_id):
         if world_boss_progress.has_hit_today(base_dir, account_id, name):
             return _NO_ACTION
         mode, mode_reason = _current_mode(text, base_dir, account_id)
+        if mode == world_boss_mode.FURNACE_LOOP:
+            world_boss_progress.mark_hit(base_dir, account_id, name)
+            if guard_clear_strategy.is_session_active():
+                # 護衛正在被清，兩邊都會換手、會打架（熊 2026-09-05 反映）。
+                # 先排隊，等 guard_clear_strategy 的 session 結束時
+                # 自己會透過 on_session_end() 回呼接續處理，不用在這裡等待。
+                furnace_loop_strategy.queue_pending(
+                    text, base_dir, account_id,
+                    reason=f"世界王「{name}」判定為爐火模式（{mode_reason}），但護衛正在被清，先排隊",
+                )
+                return _NO_ACTION
+            print(f"[世界王] 「{name}」判定為 furnace_loop（{mode_reason}），交給爐火模式處理")
+            return furnace_loop_strategy.start(text, base_dir, account_id)
         if mode != world_boss_mode.TOUCH:
             print(f"[世界王] 「{name}」判定為 {mode}（{mode_reason}），不是 touch，先不摸一下（等 {mode} 的行為邏輯補上）")
             return _NO_ACTION

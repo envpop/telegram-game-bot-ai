@@ -116,3 +116,39 @@ async def execute(action: Action) -> None:
         print(f"⚠️ 未知的 action mode：{action.mode}，略過執行（trigger 模組寫錯 mode 字串？）")
         return
     await runner(action.payload)
+
+
+async def execute_dict(action_dict: dict) -> bool:
+    """把「plain dict」格式的決策結果轉成 Action 並執行。
+
+    這個 dict 格式(mode: "now"/"scheduled"/"sequence"/None，配上
+    command/commands/delay_seconds/interval_seconds/chat_id/reason 等
+    key)是 world_boss_strategy.decide_action() 這類公告路徑策略模組沿用
+    的舊介面，比這支檔案的 Action dataclass 更早出現。
+
+    2026-09-05 抽成共用函式：action_dispatcher.py 的公告迴圈、以及
+    furnace_loop_strategy.py「護衛清完後接續處理排隊中的王」這類需要
+    「事後補送」plain-dict 動作的呼叫端，都需要同一套轉換邏輯，抽出來
+    避免兩邊各自重寫一次、以後改動只需要改一個地方。
+
+    回傳 True 代表真的送出了什麼，False 代表 mode 是 None(沒有動作)。
+    """
+    mode = action_dict.get("mode")
+    if mode == "now":
+        await execute(send_now(
+            action_dict["command"], chat_id=action_dict.get("chat_id"), reason=action_dict.get("reason"),
+        ))
+        return True
+    if mode == "scheduled":
+        await execute(schedule(
+            [action_dict["command"]], delay_seconds=action_dict.get("delay_seconds", 0.0),
+            chat_id=action_dict.get("chat_id"), reason=action_dict.get("reason"),
+        ))
+        return True
+    if mode == "sequence":
+        await execute(send_sequence(
+            action_dict["commands"], chat_id=action_dict.get("chat_id"),
+            interval_seconds=action_dict.get("interval_seconds", 2), reason=action_dict.get("reason"),
+        ))
+        return True
+    return False
