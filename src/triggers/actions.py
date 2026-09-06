@@ -61,10 +61,19 @@ def click_button(chat_id, message_id, data, button_text=None, reason=None, log=N
                            "data": data, "button_text": button_text, "reason": reason})
 
 
-def schedule(steps, delay_seconds, chat_id=None, reason=None, log=None, stop=True) -> Action:
+def schedule(steps, delay_seconds, chat_id=None, reason=None, log=None, stop=True,
+             repeat=1, interval=(0.0, 0.0)) -> Action:
+    """repeat/interval 直接對應 scheduler.ScheduledJob 的同名欄位——
+    repeat=1(預設)是「延遲後送一次」，repeat>1 是「延遲後開始，重複送
+    repeat 次，每次間隔 interval 秒(區間內亂數)」，給 sakura_strategy.py
+    這類需要連刷一長串指令的呼叫端用。
+    2026-09-06 補上：這兩個參數原本完全沒有暴露出來，導致 repeat 永遠
+    掉回 ScheduledJob 的預設值 1，是 sakura 連刷「只觸發一次」的根本
+    原因，不是這次才壞的舊缺口，這裡一併補上。"""
     return Action(mode="schedule", stop=stop, log=log,
                   payload={"steps": steps, "delay_seconds": delay_seconds,
-                           "chat_id": chat_id, "reason": reason})
+                           "chat_id": chat_id, "reason": reason,
+                           "repeat": repeat, "interval": interval})
 
 
 async def _run_send_now(payload):
@@ -89,11 +98,13 @@ async def _run_schedule(payload):
     job = scheduler.ScheduledJob(
         steps=payload["steps"], delay_seconds=payload["delay_seconds"],
         chat_id=payload.get("chat_id"), reason=payload.get("reason"),
+        repeat=payload.get("repeat", 1), interval=payload.get("interval", (0.0, 0.0)),
     )
     job_id = scheduler.schedule(job)
     print(f"⏳ {payload.get('reason')}，已排程 {job_id}"
           f"（{payload['delay_seconds']:.1f} 秒後執行，"
           f"可用 /sched list 查看、/sched cancel {job_id} 取消）")
+    return job_id
 
 
 # mode -> 執行函式，登記制。新增 mode 時只要在這裡加一筆，dispatch() 不用改。
@@ -143,6 +154,7 @@ async def execute_dict(action_dict: dict) -> bool:
         await execute(schedule(
             [action_dict["command"]], delay_seconds=action_dict.get("delay_seconds", 0.0),
             chat_id=action_dict.get("chat_id"), reason=action_dict.get("reason"),
+            repeat=action_dict.get("repeat", 1), interval=action_dict.get("interval", (0.0, 0.0)),
         ))
         return True
     if mode == "sequence":
