@@ -92,6 +92,72 @@ def _extract_name(text, pattern):
 
 _NO_ACTION = {"mode": None, "delay_seconds": None, "command": None, "chat_id": None, "reason": None}
 
+# 王出現時剛好護衛也在，兩邊都會換手/搶陣容（熊 2026-09-05／09-06 反映）。
+# 判斷準則是「這隻王身上有沒有護衛」+「清護衛的自動開關有沒有開」——
+# 不是查 guard_clear_strategy.is_session_active()：王剛出現的當下，
+# guard_clear 可能都還沒來得及反應護衛訊息、session 根本還沒開始，用
+# session 狀態判斷會有時間差漏洞。只要「有護衛」且「開關開著」，就代表
+# 護衛遲早會被清，世界王(不管哪個模式)都先讓路，不用等到「session 真的
+# 開始了」才知道要讓路。
+#
+# 這個排隊機制本來只放在 furnace_loop_strategy.py(因為當初只有它會換手)，
+# 2026-09-06 改成放在這裡、對所有模式生效，因為 touch 模式也會跟清護衛
+# 搶「出戰」這個共用資源。
+_pending_boss = None  # {"text","name","base_dir","account_id"} 或 None
+
+
+def _has_guards(text):
+    if not world_boss_status.signature(text):
+        return False
+    return bool(world_boss_status.parse(text).get("has_guards"))
+
+
+def _should_wait_for_guards(text, base_dir):
+    return _has_guards(text) and auto_toggle.is_enabled(base_dir, auto_toggle.GUARD_CLEAR)
+
+
+def _queue_pending_boss(text, name, base_dir, account_id):
+    global _pending_boss
+    _pending_boss = {"text": text, "name": name, "base_dir": base_dir, "account_id": account_id}
+    print(f"[世界王] 🕒 「{name}」身上有護衛、清護衛自動開啟中，先排隊，等護衛清完再行動")
+
+
+async def resume_pending_boss():
+    """guard_clear_strategy 的 session 結束時透過 on_session_end() 回呼
+    觸發。沒有排隊中的王時安靜結束，不是錯誤（大部分護衛清理事件都跟
+    世界王無關，不該每次都印東西）。"""
+    global _pending_boss
+    if _pending_boss is None:
+        return
+    pending = _pending_boss
+    _pending_boss = None
+    mode, mode_reason = _current_mode(pending["text"], pending["base_dir"], pending["account_id"])
+    action_dict = _dispatch_for_mode(
+        pending["text"], pending["name"], mode, mode_reason, pending["base_dir"], pending["account_id"],
+    )
+    if await actions.execute_dict(action_dict):
+        print(f"[世界王] ▶️ 護衛清完，接續處理「{pending['name']}」（判定為 {mode}）")
+
+
+guard_clear_strategy.on_session_end(resume_pending_boss)
+
+
+def _dispatch_for_mode(text, name, mode, mode_reason, base_dir, account_id):
+    """依 mode 分派要做的事。抽出來給 boss_spawn 現場觸發、跟護衛清完後的
+    接續觸發(resume_pending_boss)共用，不要各自寫一次判斷邏輯。"""
+    catalog = load_catalog(base_dir)
+    chat_id = catalog["status_query"]["chat_id"]
+    command = catalog["attack_command"]
+
+    if mode == world_boss_mode.FURNACE_LOOP:
+        print(f"[世界王] 「{name}」判定為 furnace_loop（{mode_reason}），交給爐火模式處理")
+        return furnace_loop_strategy.start(text, base_dir, account_id)
+    if mode != world_boss_mode.TOUCH:
+        print(f"[世界王] 「{name}」判定為 {mode}（{mode_reason}），不是 touch，先不摸一下（等 {mode} 的行為邏輯補上）")
+        return _NO_ACTION
+    return {"mode": "now", "delay_seconds": None, "command": command, "chat_id": chat_id,
+            "reason": f"世界王「{name}」剛出現，今天還沒打過，立刻討伐"}
+
 
 def _current_mode(text, base_dir, account_id):
     """回傳 (mode, reason)。stage/ticket_bounty 只有在這則文字符合
@@ -135,40 +201,47 @@ def decide_action(text, catalog, base_dir, account_id):
             return _NO_ACTION
         if world_boss_progress.has_hit_today(base_dir, account_id, name):
             return _NO_ACTION
-        mode, mode_reason = _current_mode(text, base_dir, account_id)
-        if mode == world_boss_mode.FURNACE_LOOP:
-            world_boss_progress.mark_hit(base_dir, account_id, name)
-            if guard_clear_strategy.is_session_active():
-                # 護衛正在被清，兩邊都會換手、會打架（熊 2026-09-05 反映）。
-                # 先排隊，等 guard_clear_strategy 的 session 結束時
-                # 自己會透過 on_session_end() 回呼接續處理，不用在這裡等待。
-                furnace_loop_strategy.queue_pending(
-                    text, base_dir, account_id,
-                    reason=f"世界王「{name}」判定為爐火模式（{mode_reason}），但護衛正在被清，先排隊",
-                )
-                return _NO_ACTION
-            print(f"[世界王] 「{name}」判定為 furnace_loop（{mode_reason}），交給爐火模式處理")
-            return furnace_loop_strategy.start(text, base_dir, account_id)
-        if mode != world_boss_mode.TOUCH:
-            print(f"[世界王] 「{name}」判定為 {mode}（{mode_reason}），不是 touch，先不摸一下（等 {mode} 的行為邏輯補上）")
-            return _NO_ACTION
+
+        # 這則出現公告通常不會重複，一旦決定要處理(不管是現在動作、還是
+        # 排隊等護衛)，就是我們唯一能處理這隻王的機會，先標記掉。
         world_boss_progress.mark_hit(base_dir, account_id, name)
-        return {"mode": "now", "delay_seconds": None, "command": command, "chat_id": chat_id,
-                "reason": f"世界王「{name}」剛出現，今天還沒打過，立刻討伐"}
+
+        if _should_wait_for_guards(text, base_dir):
+            _queue_pending_boss(text, name, base_dir, account_id)
+            return _NO_ACTION
+
+        mode, mode_reason = _current_mode(text, base_dir, account_id)
+        return _dispatch_for_mode(text, name, mode, mode_reason, base_dir, account_id)
 
     if event_id == "phase_transition":
         name = _extract_name(text, event["name_pattern"])
         if name is None:
             print(f"[世界王] ⚠️ 偵測到變身訊息，但抓不到王的名字，跳過判斷：{text[:40]}...")
             return _NO_ACTION
+
+        delay = event.get("cooldown_seconds", 60)
+
+        # 爐火流程(furnace_loop)進行中如果剛好換相，代表次數還沒用完、
+        # 但攻擊被硬直卡住了——不是次數用完，不能直接判斷成「這一輪結束」
+        # 去啟動爐火重置。硬直 delay 秒後重送一次「連續討伐」繼續打，
+        # 沿用既有的變身硬直秒數，不用另外訂數字（熊 2026-09-06 反映）。
+        if furnace_loop_strategy.is_active():
+            print(f"[世界王] 「{name}」換相，爐火流程還在進行中（次數還沒用完），{delay} 秒後繼續連續討伐")
+            return furnace_loop_strategy.handle_phase_transition(delay)
+
         if world_boss_progress.has_hit_today(base_dir, account_id, name):
             return _NO_ACTION
+
+        world_boss_progress.mark_hit(base_dir, account_id, name)
+
+        if _should_wait_for_guards(text, base_dir):
+            _queue_pending_boss(text, name, base_dir, account_id)
+            return _NO_ACTION
+
         mode, mode_reason = _current_mode(text, base_dir, account_id)
         if mode != world_boss_mode.TOUCH:
             print(f"[世界王] 「{name}」判定為 {mode}（{mode_reason}），不是 touch，先不摸一下（等 {mode} 的行為邏輯補上）")
             return _NO_ACTION
-        delay = event.get("cooldown_seconds", 60)
-        world_boss_progress.mark_hit(base_dir, account_id, name)
         return {"mode": "scheduled", "delay_seconds": delay, "command": command, "chat_id": chat_id,
                 "reason": f"世界王「{name}」變身，今天還沒打過，等硬直 {delay} 秒後討伐"}
 
@@ -201,12 +274,17 @@ def decide_action_from_status_query(text, catalog, base_dir, account_id):
     if query["alive_check_pattern"] in text:
         return _NO_ACTION  # 王已經死了，補不了
 
+    world_boss_progress.mark_hit(base_dir, account_id, name)
+
+    if _should_wait_for_guards(text, base_dir):
+        _queue_pending_boss(text, name, base_dir, account_id)
+        return _NO_ACTION
+
     mode, mode_reason = _current_mode(text, base_dir, account_id)
     if mode != world_boss_mode.TOUCH:
         print(f"[世界王] 「{name}」判定為 {mode}（{mode_reason}），不是 touch，先不補刀（等 {mode} 的行為邏輯補上）")
         return _NO_ACTION
 
-    world_boss_progress.mark_hit(base_dir, account_id, name)
     return {
         "mode": "now",
         "delay_seconds": None,

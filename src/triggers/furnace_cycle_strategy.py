@@ -82,14 +82,14 @@ SYSTEM_KEY = auto_toggle.WORLD_BOSS
 # 投爐每次的固定數量——只有「第一次投爐(剛燒穿，還不知道目前爐能%)」
 # 會用到這個值，之後每次都改用 _feed_quantity_for_gap() 動態算。
 # 2026-09-04 先抓一個保守的起始值，需要熊依實際碎片存量調整。
-FEED_QUANTITY = 150
+FEED_QUANTITY = 160
 
 # 投爐的爐能估算：官方講「約×3」，這裡刻意打八五折抓保守值(×2.55)，
 # 寧可多投一次炸掉，也不要因為運氣差投不夠還要再送一次訊息——反正投
 # 超過 500% 的部分不會浪費，見檔頭說明。
 FEED_ENERGY_TARGET = 500
-FEED_ENERGY_MULTIPLIER = 3.2
-FEED_SAFETY_MARGIN = 0.95
+FEED_ENERGY_MULTIPLIER = 3
+FEED_SAFETY_MARGIN = 0.85
 
 # 觀火間隔：一般 3.5~7 秒亂數，爐溫接近時縮短。
 WATCH_DELAY_NORMAL = (3.5, 7.0)
@@ -97,7 +97,7 @@ WATCH_DELAY_NEAR_BREAKTHROUGH = 2.0
 WATCH_NEAR_BREAKTHROUGH_THRESHOLD = 94
 
 # 投爐間隔：維持跟觀火一樣的區間，避免連續動作送太快。
-FEED_DELAY = 2.0
+FEED_DELAY = (1.5, 3.2)
 
 # 安全閥：逾時未結束就視為異常，清除狀態、放行給熊手動處理。20 分鐘是
 # 拍腦袋的保險值，跟 guard_clear_strategy.py 的 GUARD_SESSION_TIMEOUT_SECONDS
@@ -133,10 +133,22 @@ def start(reason: str = "次數用完，開始爐火重置流程"):
                              log=f"[爐火流程] 🔥 {reason}，開始觀火")
 
 
+def _resolve_delay(value):
+    """讓延遲常數可以填單一數字(固定秒數)或 (最小, 最大) 區間(亂數)，
+    兩種格式都能用。2026-09-06 修正：熊把 FEED_DELAY 從 (3.5, 7.0) 改成
+    單一數字 2 之後，原本寫死的 random.uniform(*FEED_DELAY) 解包失敗直接
+    崩潰(TypeError: argument after * must be an iterable, not float)——
+    常數本來就設計成「熊可以自己調」，調的格式卻只支援其中一種，是這裡
+    的防呆沒做好，不是熊填錯。"""
+    if isinstance(value, (int, float)):
+        return float(value)
+    return random.uniform(*value)
+
+
 def _watch_delay(temp_current):
     if temp_current is not None and temp_current >= WATCH_NEAR_BREAKTHROUGH_THRESHOLD:
         return WATCH_DELAY_NEAR_BREAKTHROUGH
-    return random.uniform(*WATCH_DELAY_NORMAL)
+    return _resolve_delay(WATCH_DELAY_NORMAL)
 
 
 def _feed_quantity_for_gap(current_energy_pct):
@@ -194,7 +206,7 @@ def _handle_feed(ctx):
         )
     _mark_active()
     quantity = _feed_quantity_for_gap(parsed.get("energy_total_pct"))
-    delay = random.uniform(*FEED_DELAY)
+    delay = _resolve_delay(FEED_DELAY)
     return actions.schedule(
         [f"投爐 {quantity}"], delay_seconds=delay,
         reason=f"還沒炸(目前爐能 {parsed.get('energy_total_pct')}%)，{delay:.1f} 秒後投 {quantity}",

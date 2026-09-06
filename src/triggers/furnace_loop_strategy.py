@@ -41,10 +41,24 @@ daily_count/daily_limit 欄位，不用新解析)：daily_count >= daily_limit
 提前結束)，這支模組不會主動做任何事——這個模式定義上就是「有次數就打，
 沒次數就重置一次」，不是「一定要打到某個結果」，安靜結束是合理行為。
 
+唯一的例外是「換相」：王在連續討伐途中換相會被硬直卡住，次數還沒用完
+但這一輪指令提前中止，不是「次數用完」，不能誤判去啟動爐火重置。
+world_boss_strategy.py 偵測到 phase_transition 事件時，如果這支模組正在
+進行中(is_active())，會呼叫 handle_phase_transition() 而不是走它自己
+原本 touch 模式的判斷，讓 session 續命、硬直過後重送一次「連續討伐」
+（熊 2026-09-06 反映；「換相會不會帶階數/懸賞資訊」目前沒有實際樣本
+確認，不影響這裡的處理——這裡只在乎「續不續攻擊」，不需要那些欄位）。
+
 === 安全閥 ===
 跟 furnace_cycle_strategy.py 同樣的邏輯：用 runtime_state 的逾時旗標
 避免萬一「連續討伐」的戰報格式跟預期不同、卡住沒觸發 furnace_cycle，
 導致 session 旗標永遠卡在「進行中」擋住下一隻王的判斷。
+
+=== 護衛衝突(不在這支檔案裡處理) ===
+2026-09-06 起，「王出現時剛好有護衛，會跟清護衛搶換手」這個問題的排隊/
+接續機制搬到 world_boss_strategy.py 裡統一處理(因為 touch 模式也會撞到
+同樣的問題，不是 furnace_loop 專屬的)。這支檔案不再持有排隊狀態，也不再
+匯入 guard_clear_strategy。
 """
 import time
 
@@ -54,7 +68,6 @@ from roster_loader import load_roster
 from weakness_matcher import WeaknessParser, TopSelector
 from triggers import actions
 from triggers import furnace_cycle_strategy
-from triggers import guard_clear_strategy
 from triggers import runtime_state
 
 SYSTEM_KEY = auto_toggle.WORLD_BOSS
@@ -64,14 +77,6 @@ SWITCH_DELAY_SECONDS = 2.0
 
 SESSION_TIMEOUT_SECONDS = 20 * 60
 _SESSION_STATE_KEY = "furnace_loop_active"
-
-# 世界王出現時剛好護衛也在被清，兩邊都會換手、互相打架(熊 2026-09-05
-# 反映)。解法：發現護衛清理中就先排隊，不要跟著換手，等
-# guard_clear_strategy 清完(session 結束)時，透過它的通用回呼機制主動
-# 回頭處理——不是靠之後剛好有別的訊息重新觸發（那樣不保證會發生）。
-# 一次只會有一隻王排隊（這支 bot 一次只服務一個帳號，同一時間不會有
-# 兩隻王需要排隊）。
-_pending = None
 
 
 def is_active() -> bool:
@@ -157,37 +162,18 @@ def start(text, base_dir, account_id, reason="次數還沒用完，先確認陣�
     }
 
 
-def queue_pending(text, base_dir, account_id, reason):
-    """world_boss_strategy.py 發現護衛正在被清時呼叫，把這隻王記下來，
-    不要現在就換手/攻擊(會跟清護衛搶陣容)。呼叫端要自己先 mark_hit——
-    這則出現公告通常不會重複，排進來就是我們唯一能處理這隻王的機會，
-    不能靠「之後還有機會重新判斷」。"""
-    global _pending
-    _pending = {"text": text, "base_dir": base_dir, "account_id": account_id, "reason": reason}
-    print(f"[爐火模式] 🕒 {reason}")
-
-
-async def resume_pending():
-    """guard_clear_strategy 的 session 結束時透過 on_session_end() 回呼
-    觸發，把排隊中的王接著處理掉。沒有排隊中的王時安靜結束，不是錯誤
-    （大部分護衛清理事件都跟世界王無關，不該每次都印警告）。"""
-    global _pending
-    if _pending is None:
-        return
-    pending = _pending
-    _pending = None
-    action_dict = start(
-        pending["text"], pending["base_dir"], pending["account_id"],
-        reason="護衛清完，接續處理排隊中的世界王",
-    )
-    if await actions.execute_dict(action_dict):
-        print(f"[爐火模式] ▶️ {action_dict.get('reason', '護衛清完，接續處理排隊中的世界王')}")
-
-
-# 護衛清理結束時，回頭檢查有沒有排隊中的王——guard_clear_strategy 不需要
-# 認識這支模組，只負責在 session 結束時通知所有登記過的回呼，見該檔案
-# on_session_end() 的說明。
-guard_clear_strategy.on_session_end(resume_pending)
+def handle_phase_transition(delay_seconds):
+    """world_boss_strategy.py 偵測到 phase_transition 事件、且這支模組
+    正在進行中(is_active())時呼叫。代表王在連續討伐途中換相，被硬直卡住
+    ——次數還沒用完，只是這一輪指令提前中止，不是「次數用完」，不能誤判
+    去啟動爐火重置。延長 session 逾時，回傳延遲後重送「連續討伐」的
+    plain dict(跟 start() 的回傳格式一致，呼叫端一樣用 actions.
+    execute_dict() 處理)。"""
+    _mark_active()
+    return {
+        "mode": "scheduled", "delay_seconds": delay_seconds, "command": "連續討伐", "chat_id": None,
+        "reason": f"世界王換相，硬直 {delay_seconds} 秒後繼續連續討伐（次數還沒用完）",
+    }
 
 
 def decide(ctx):
