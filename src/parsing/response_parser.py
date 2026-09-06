@@ -52,6 +52,7 @@ from .response_shapes import furnace_awakening_announcement
 from .response_shapes import furnace_watch_blocked
 from .response_shapes import furnace_overview
 from .response_shapes import furnace_feed_blocked
+from .response_shapes import world_boss_continuous_report
 
 _ROUTE_MAP = {
     ServerSubtype.RESPONSE: "server_response_flow",
@@ -93,6 +94,7 @@ _KNOWN_SHAPES = [
     furnace_watch_blocked,
     furnace_overview,
     furnace_feed_blocked,
+    world_boss_continuous_report,
 ]
 
 

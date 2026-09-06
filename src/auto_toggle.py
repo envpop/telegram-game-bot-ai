@@ -43,11 +43,11 @@ SAKURA_AUTO_CHALLENGE = "sakura_auto_challenge"
 # 新增系統時只要在這裡（連同上面的常數）加一行，指令跟提示訊息就會自動吃到。
 SYSTEM_KEYS = {
     MAIN_TOWER_BATTLE: "主塔戰鬥",
-    WORLD_BOSS: "世界王摸王",
+    WORLD_BOSS: "世界王開關 切換模式用/wbmode",
     SATELLITE_TRAINING: "群星計畫（培育衛星）",
     GUARD_CLEAR: "清護衛",
     SATELLITE_NAMING: "群星計畫結業命名",
-    SAKURA_AUTO_CHALLENGE: "櫻花窗口自動連刷",
+    SAKURA_AUTO_CHALLENGE: "櫻花窗口自動連刷 切換模式用/sakura",
 }
 
 

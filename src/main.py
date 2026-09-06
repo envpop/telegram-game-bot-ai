@@ -13,6 +13,7 @@ from triggers import satellite_training_strategy
 from triggers import satellite_naming_strategy
 from triggers import sakura_strategy
 from triggers import furnace_cycle_strategy
+from triggers import furnace_loop_strategy
 from parser import MessageRouter
 from log_maintenance import run_maintenance
 from display_formatter import format_display_line
@@ -73,6 +74,7 @@ dispatcher = ActionDispatcher(
         # 反映：先清護衛再打王比較好，這裡先把順序喬對）。
         guard_clear_strategy,
         furnace_cycle_strategy,
+        furnace_loop_strategy,
         world_boss_strategy,
         main_tower_battle_strategy,
         satellite_training_strategy,
