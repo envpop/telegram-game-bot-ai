@@ -38,6 +38,7 @@ decide_action_from_status_query() 本身保留、邏輯不變，decide(ctx) 只�
 清單用法，不受這次調整影響。
 """
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -122,6 +123,12 @@ def _queue_pending_boss(text, name, base_dir, account_id):
     print(f"[世界王] 🕒 「{name}」身上有護衛、清護衛自動開啟中，先排隊，等護衛清完再行動")
 
 
+# 護衛清完的瞬間就立刻換手/攻擊，容易撞到清護衛最後一個動作本身的
+# 伺服器冷卻(熊 2026-09-06 反映)。留一個小緩衝，不用等到下一則訊息，
+# 純粹讓伺服器喘口氣——數字是拍腦袋的保守值，不是遊戲機制數字。
+RESUME_BUFFER_SECONDS = 3.0
+
+
 async def resume_pending_boss():
     """guard_clear_strategy 的 session 結束時透過 on_session_end() 回呼
     觸發。沒有排隊中的王時安靜結束，不是錯誤（大部分護衛清理事件都跟
@@ -131,12 +138,16 @@ async def resume_pending_boss():
         return
     pending = _pending_boss
     _pending_boss = None
+
+    await asyncio.sleep(RESUME_BUFFER_SECONDS)
+
     mode, mode_reason = _current_mode(pending["text"], pending["base_dir"], pending["account_id"])
     action_dict = _dispatch_for_mode(
         pending["text"], pending["name"], mode, mode_reason, pending["base_dir"], pending["account_id"],
     )
     if await actions.execute_dict(action_dict):
-        print(f"[世界王] ▶️ 護衛清完，接續處理「{pending['name']}」（判定為 {mode}）")
+        print(f"[世界王] ▶️ 護衛清完（緩衝 {RESUME_BUFFER_SECONDS:.0f} 秒後），"
+              f"接續處理「{pending['name']}」（判定為 {mode}）")
 
 
 guard_clear_strategy.on_session_end(resume_pending_boss)
@@ -227,7 +238,7 @@ def decide_action(text, catalog, base_dir, account_id):
         # 沿用既有的變身硬直秒數，不用另外訂數字（熊 2026-09-06 反映）。
         if furnace_loop_strategy.is_active():
             print(f"[世界王] 「{name}」換相，爐火流程還在進行中（次數還沒用完），{delay} 秒後繼續連續討伐")
-            return furnace_loop_strategy.handle_phase_transition(delay)
+            return furnace_loop_strategy.handle_phase_transition(text, delay, base_dir, account_id)
 
         if world_boss_progress.has_hit_today(base_dir, account_id, name):
             return _NO_ACTION

@@ -151,8 +151,14 @@ async def execute_dict(action_dict: dict) -> bool:
         ))
         return True
     if mode == "scheduled":
+        # steps(多個不同指令依序執行一次，例如換手→換手→攻擊)是
+        # 2026-09-06 新增；沒給 steps 的舊呼叫端(command 單數)照舊只送
+        # 一個指令，維持相容。repeat/interval 是 sakura_strategy.py 這種
+        # 「同一個指令重複很多次」在用，兩種用法可以並存(steps 依序跑
+        # 完一輪，repeat>1 時整輪再重複)。
+        steps = action_dict.get("steps") or [action_dict["command"]]
         await execute(schedule(
-            [action_dict["command"]], delay_seconds=action_dict.get("delay_seconds", 0.0),
+            steps, delay_seconds=action_dict.get("delay_seconds", 0.0),
             chat_id=action_dict.get("chat_id"), reason=action_dict.get("reason"),
             repeat=action_dict.get("repeat", 1), interval=action_dict.get("interval", (0.0, 0.0)),
         ))

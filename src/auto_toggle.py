@@ -38,6 +38,7 @@ SATELLITE_TRAINING = "satellite_training"
 GUARD_CLEAR = "guard_clear"
 SATELLITE_NAMING = "satellite_naming"
 SAKURA_AUTO_CHALLENGE = "sakura_auto_challenge"
+FURNACE_AUTO = "furnace_auto"
 
 # system_key -> 顯示用中文名稱，供 print 訊息跟終端機指令共用，
 # 新增系統時只要在這裡（連同上面的常數）加一行，指令跟提示訊息就會自動吃到。
@@ -48,6 +49,7 @@ SYSTEM_KEYS = {
     GUARD_CLEAR: "清護衛",
     SATELLITE_NAMING: "群星計畫結業命名",
     SAKURA_AUTO_CHALLENGE: "櫻花窗口自動連刷 切換模式用/sakura",
+    FURNACE_AUTO: "世界王次數用完後自動觀火（關閉時仍可手動觀火，爐火流程照樣會自動接手跑完）",
 }
 
 
@@ -104,13 +106,16 @@ SHORT_ALIASES = {
     "satname": SATELLITE_NAMING,
     "sat_name": SATELLITE_NAMING,
     "sakura": SAKURA_AUTO_CHALLENGE,
+    "furnace": FURNACE_AUTO,
+    "fa": FURNACE_AUTO,
 }
 
 _USAGE = ("[錯誤] /auto 用法：\n"
           "  /auto                    查看三套系統目前開關狀態\n"
           "  /auto <system> on|off    開啟/關閉指定系統\n"
           "  <system>：mtb（主塔戰鬥）／wb（世界王）／sat（群星計畫）／"
-          "gc（清除守衛）／satname（群星計畫結業命名）／sakura（櫻花窗口自動連刷）")
+          "gc（清除守衛）／satname（群星計畫結業命名）／sakura（櫻花窗口自動連刷）／"
+          "furnace（世界王次數用完後自動觀火）")
 
 
 def _all_aliases():

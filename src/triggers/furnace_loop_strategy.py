@@ -162,18 +162,65 @@ def start(text, base_dir, account_id, reason="次數還沒用完，先確認陣�
     }
 
 
-def handle_phase_transition(delay_seconds):
+def handle_phase_transition(text, delay_seconds, base_dir, account_id):
     """world_boss_strategy.py 偵測到 phase_transition 事件、且這支模組
     正在進行中(is_active())時呼叫。代表王在連續討伐途中換相，被硬直卡住
     ——次數還沒用完，只是這一輪指令提前中止，不是「次數用完」，不能誤判
-    去啟動爐火重置。延長 session 逾時，回傳延遲後重送「連續討伐」的
-    plain dict(跟 start() 的回傳格式一致，呼叫端一樣用 actions.
-    execute_dict() 處理)。"""
+    去啟動爐火重置。
+
+    2026-09-06 修正：換相後弱點屬性、甚至王的類型都可能整個換掉(熊反映
+    的真實案例：木→火、防禦型→持久型)，原本這裡只是單純重送「連續
+    討伐」，沒有重新判斷陣容，換完相打的可能是完全不合弱點的屬性。
+    WeaknessParser.parse() 本來就認得換相公告的格式(「五行 X→Y　類型
+    A→B　新弱點:Z」)，直接沿用，跟 start() 用同一套 _decide_switch_
+    commands() 判斷，不用另外寫。
+
+    硬直 delay_seconds 秒是遊戲機制本身的限制，這段時間本來就打不到王；
+    換手動作排在硬直之後、攻擊之前，一次用 scheduler.py 的
+    steps+interval 機制排完(硬直→換手→換手→攻擊，彼此間隔
+    SWITCH_DELAY_SECONDS)，不會太快連續送出指令(熊 2026-09-06 反映：
+    換相/護衛清完後太快換手+攻擊，容易撞到伺服器本身的指令冷卻)。"""
     _mark_active()
+
+    weakness = WeaknessParser.parse(text)
+    if weakness is None:
+        # 抓不到新弱點，沒辦法判斷陣容，只能照舊直接重送連續討伐——
+        # 陣容可能不是最佳，但總比完全不打好，不要因為解析失敗就放棄。
+        return {
+            "mode": "scheduled", "delay_seconds": delay_seconds, "steps": ["連續討伐"],
+            "interval": (SWITCH_DELAY_SECONDS, SWITCH_DELAY_SECONDS), "chat_id": None,
+            "reason": f"世界王換相，硬直 {delay_seconds} 秒後繼續連續討伐"
+                      "（次數還沒用完，換相文字抓不到新弱點，陣容可能不是最佳）",
+        }
+
+    roster = load_roster(base_dir, account_id)
+    rules = load_json(RULES_PATH)
+    commands = _decide_switch_commands(roster, weakness, rules)
+    commands.append("連續討伐")
+
+    switch_note = f"先換手（{' → '.join(commands[:-1])}）再" if len(commands) > 1 else ""
     return {
-        "mode": "scheduled", "delay_seconds": delay_seconds, "command": "連續討伐", "chat_id": None,
-        "reason": f"世界王換相，硬直 {delay_seconds} 秒後繼續連續討伐（次數還沒用完）",
+        "mode": "scheduled", "delay_seconds": delay_seconds, "steps": commands,
+        "interval": (SWITCH_DELAY_SECONDS, SWITCH_DELAY_SECONDS), "chat_id": None,
+        "reason": f"世界王換相(新弱點 {weakness.current_element}屬性)，"
+                  f"硬直 {delay_seconds} 秒後{switch_note}繼續連續討伐（次數還沒用完）",
     }
+
+
+def is_daily_count_exhausted(structured: dict):
+    """純函式：從戰報/連續討伐回覆的解析結果判斷「今天次數是否用完」。
+    抽出來是因為這個判斷不只 furnace_loop 用得到——之後 full_clear
+    模式(全程連續，次數用完一樣要靠爐火重置繼續打)也要問同一個問題，
+    不要各自重複讀 daily_count/daily_limit 兩個欄位、各自寫一次比較。
+
+    回傳 True/False/None：抓不到次數資訊(這則回覆本來就沒有次數欄位)
+    時回傳 None，呼叫端要自己決定「不知道」時該怎麼辦，不要當成 False。
+    """
+    daily_count = structured.get("daily_count")
+    daily_limit = structured.get("daily_limit")
+    if daily_count is None or daily_limit is None:
+        return None
+    return daily_count >= daily_limit
 
 
 def decide(ctx):
@@ -187,16 +234,29 @@ def decide(ctx):
     if ctx.shape not in ("world_boss_continuous_report", "world_boss_battle_report"):
         return None
 
-    parsed = ctx.structured
-    daily_count = parsed.get("daily_count")
-    daily_limit = parsed.get("daily_limit")
-
-    if daily_count is None or daily_limit is None:
+    exhausted = is_daily_count_exhausted(ctx.structured)
+    if exhausted is None:
         return None  # 這則戰報沒有次數資訊，不是我們能判斷的訊號，安靜放行
 
-    if daily_count < daily_limit:
+    daily_count = ctx.structured.get("daily_count")
+    daily_limit = ctx.structured.get("daily_limit")
+
+    if not exhausted:
         _mark_active()  # 還有進度，延長逾時，等後續戰報
         return actions.none(log=f"[爐火模式] 今日 {daily_count}/{daily_limit} 次，還沒用完，繼續等後續戰報")
 
     _clear()
+
+    # 2026-09-06 熊確認的規則：次數用完時，是不是要「自動」開始觀火，
+    # 由 /auto furnace 這個獨立開關決定；開關本身不影響爐火反應式的
+    # 那半段(furnace_cycle_strategy.decide())——開關關著時，只是不自動
+    # 送「觀火」，熊自己手動送出的話，furnace_cycle_strategy 一樣會
+    # 接手把整個流程跑完，不會因為開關關著就不理會手動操作。
+    if not ctx.is_enabled(auto_toggle.FURNACE_AUTO):
+        return actions.none(
+            log=f"[爐火模式] 今日 {daily_count}/{daily_limit} 次已用完，"
+                "但爐火自動化未開啟（/auto furnace on 可開啟），已結束本輪世界王流程，"
+                "需要手動觀火——手動送出後，爐火流程照樣會自動接手跑完",
+        )
+
     return furnace_cycle_strategy.start(reason=f"今日 {daily_count}/{daily_limit} 次已用完，開始爐火重置")
