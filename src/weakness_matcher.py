@@ -265,6 +265,55 @@ class TopSelector:
         return main_pick, sub_pick
 
     @staticmethod
+    def decide_switch_commands(roster: List[dict], weakness: WeaknessState, rules: dict) -> List[str]:
+        """回傳需要送出的換手指令列表(可能是空列表)。純函式，方便測試，
+        不做任何 I/O，也不呼叫 executor/scheduler。
+
+        2026-09-06 從 furnace_loop_strategy.py 搬到這裡共用：full_clear_
+        strategy.py 需要一模一樣的判斷邏輯(換相重判陣容、次數用完爐火
+        重置後恢復攻擊前也要重判)，不要兩個 Strategy 檔案各自維護一份。
+
+        判斷準則(熊確認)：只看屬性有沒有對上，不強求類型也剋制——但真的
+        要換的話，換手目標不將就，用 recommend_pair() 找「屬性+類型+
+        戰力都最好」的陀螺。
+            主手：目前出戰的屬性 == 弱點屬性 就不用換
+            副手：目前副手的屬性 == 相生主手所需屬性 就不用換
+        （副手的相生對象一律是「換完之後的主手屬性」，也就是
+        weakness.current_element——不管主手要不要換，換完之後主手一定
+        是這個屬性，判斷副手時不用區分主手有沒有換，答案一樣。）
+
+        指令字串是「出戰 {編號}」「副手 {編號}」——確認依據：
+        config/aliases.json 的「備戰」別名定義 ["出戰 {1}", "副手 {2}"]。
+        注意是「副手」不是「副陀螺」，後者是遊戲訊息裡的顯示名詞，不是
+        可以送出的指令字串，兩者長得像但不一樣。
+        """
+        current_main = next((t for t in roster if t.get("status") == "出戰"), None)
+        current_sub = next((t for t in roster if t.get("status") == "副陀螺"), None)
+
+        main_pick, sub_pick = TopSelector.recommend_pair(roster, weakness, rules, boss_type=weakness.boss_type)
+
+        commands = []
+
+        main_ok = bool(current_main) and current_main.get("element") == weakness.current_element
+        if not main_ok and main_pick and current_main is not main_pick:
+            commands.append(f"出戰 {main_pick.get('index')}")
+
+        # 副手要相生的對象一律是 weakness.current_element：main_ok 時目前
+        # 主手本來就已經是這個屬性；main_ok 為 False 時換完之後的主手
+        # 也會是這個屬性——兩種情況答案相同，不用分支各算一次。
+        generating_element = None
+        for src, dst in rules.get("element_generate", {}).items():
+            if dst == weakness.current_element:
+                generating_element = src
+                break
+
+        sub_ok = bool(current_sub) and generating_element and current_sub.get("element") == generating_element
+        if not sub_ok and sub_pick and current_sub is not sub_pick:
+            commands.append(f"副手 {sub_pick.get('index')}")
+
+        return commands
+
+    @staticmethod
     def missing_element_warning(tops: List[dict], weakness: WeaknessState,
                                  catalog: Optional[dict] = None) -> Optional[str]:
         """

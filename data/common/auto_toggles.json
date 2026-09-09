@@ -4,5 +4,6 @@
   "guard_clear": true,
   "satellite_naming": false,
   "sakura_auto_challenge": true,
-  "world_boss": true
+  "world_boss": false,
+  "furnace_auto": true
 }

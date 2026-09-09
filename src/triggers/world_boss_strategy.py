@@ -49,6 +49,7 @@ import world_boss_progress
 from parsing.response_shapes import world_boss_status
 from triggers import actions
 from triggers import furnace_loop_strategy
+from triggers import full_clear_strategy
 from triggers import guard_clear_strategy
 
 # 給 action_dispatcher.py 的公告策略迴圈用：迴圈用 getattr(strategy,
@@ -153,9 +154,11 @@ async def resume_pending_boss():
 guard_clear_strategy.on_session_end(resume_pending_boss)
 
 
-def _dispatch_for_mode(text, name, mode, mode_reason, base_dir, account_id):
-    """依 mode 分派要做的事。抽出來給 boss_spawn 現場觸發、跟護衛清完後的
-    接續觸發(resume_pending_boss)共用，不要各自寫一次判斷邏輯。"""
+def _dispatch_for_mode(text, name, mode, mode_reason, base_dir, account_id, context_label="剛出現"):
+    """依 mode 分派要做的事。抽出來給 boss_spawn 現場觸發、查詢保險、
+    護衛清完後的接續觸發(resume_pending_boss)共用，不要各自寫一次判斷
+    邏輯。context_label 只影響 touch 模式的 log 文字通不通順(「剛出現」
+    /「查詢時發現」)，不影響判斷邏輯本身。"""
     catalog = load_catalog(base_dir)
     chat_id = catalog["status_query"]["chat_id"]
     command = catalog["attack_command"]
@@ -163,11 +166,14 @@ def _dispatch_for_mode(text, name, mode, mode_reason, base_dir, account_id):
     if mode == world_boss_mode.FURNACE_LOOP:
         print(f"[世界王] 「{name}」判定為 furnace_loop（{mode_reason}），交給爐火模式處理")
         return furnace_loop_strategy.start(text, base_dir, account_id)
+    if mode == world_boss_mode.FULL_CLEAR:
+        print(f"[世界王] 「{name}」判定為 full_clear（{mode_reason}），交給全程模式處理")
+        return full_clear_strategy.start(text, base_dir, account_id)
     if mode != world_boss_mode.TOUCH:
         print(f"[世界王] 「{name}」判定為 {mode}（{mode_reason}），不是 touch，先不摸一下（等 {mode} 的行為邏輯補上）")
         return _NO_ACTION
     return {"mode": "now", "delay_seconds": None, "command": command, "chat_id": chat_id,
-            "reason": f"世界王「{name}」剛出現，今天還沒打過，立刻討伐"}
+            "reason": f"世界王「{name}」{context_label}，今天還沒打過，立刻討伐"}
 
 
 def _current_mode(text, base_dir, account_id):
@@ -232,13 +238,18 @@ def decide_action(text, catalog, base_dir, account_id):
 
         delay = event.get("cooldown_seconds", 60)
 
-        # 爐火流程(furnace_loop)進行中如果剛好換相，代表次數還沒用完、
-        # 但攻擊被硬直卡住了——不是次數用完，不能直接判斷成「這一輪結束」
-        # 去啟動爐火重置。硬直 delay 秒後重送一次「連續討伐」繼續打，
-        # 沿用既有的變身硬直秒數，不用另外訂數字（熊 2026-09-06 反映）。
+        # 爐火流程(furnace_loop)或全程流程(full_clear)進行中如果剛好換相，
+        # 代表次數還沒用完、但攻擊被硬直卡住了——不是次數用完，不能直接
+        # 判斷成「這一輪結束」去啟動爐火重置。硬直 delay 秒後重送一次
+        # 「連續討伐」繼續打，沿用既有的變身硬直秒數，不用另外訂數字
+        # （熊 2026-09-06 反映）。兩個模式同一時間只會有一個在跑(同一隻
+        # 王只會判定成一種 mode)，依序檢查就好，不會衝突。
         if furnace_loop_strategy.is_active():
             print(f"[世界王] 「{name}」換相，爐火流程還在進行中（次數還沒用完），{delay} 秒後繼續連續討伐")
             return furnace_loop_strategy.handle_phase_transition(text, delay, base_dir, account_id)
+        if full_clear_strategy.is_active():
+            print(f"[世界王] 「{name}」換相，全程流程還在進行中（次數還沒用完），{delay} 秒後繼續連續討伐")
+            return full_clear_strategy.handle_phase_transition(text, delay, base_dir, account_id)
 
         if world_boss_progress.has_hit_today(base_dir, account_id, name):
             return _NO_ACTION
@@ -260,6 +271,10 @@ def decide_action(text, catalog, base_dir, account_id):
         name = _extract_name(text, event["name_pattern"])
         if name and not world_boss_progress.has_hit_today(base_dir, account_id, name):
             print(f"[世界王] ⚠️ 「{name}」已被討伐，但今天沒有打過的記錄——出現/變身/查詢三道保險都沒接住，這隻已經錯過了。")
+        # 2026-09-06 新增：full_clear 模式要靠這則公告知道「王死了，該
+        # 結束流程了」(熊確認沒有其他判斷方式，先用這個)。furnace_loop
+        # 不需要對應——它打完一輪+爐火一次就停，不會等到王死。
+        full_clear_strategy.on_boss_defeated()
         return _NO_ACTION
 
     # periodic_status_report / guards_cleared：無動作
@@ -292,17 +307,7 @@ def decide_action_from_status_query(text, catalog, base_dir, account_id):
         return _NO_ACTION
 
     mode, mode_reason = _current_mode(text, base_dir, account_id)
-    if mode != world_boss_mode.TOUCH:
-        print(f"[世界王] 「{name}」判定為 {mode}（{mode_reason}），不是 touch，先不補刀（等 {mode} 的行為邏輯補上）")
-        return _NO_ACTION
-
-    return {
-        "mode": "now",
-        "delay_seconds": None,
-        "command": catalog["attack_command"],
-        "chat_id": query["chat_id"],  # 討伐指令固定送去摸熊神社(bot 私訊)，公告頻道沒有發言權限
-        "reason": f"查詢「世界王」時發現「{name}」今天還沒打過、王還活著，補一刀",
-    }
+    return _dispatch_for_mode(text, name, mode, mode_reason, base_dir, account_id, context_label="查詢時發現")
 
 
 def decide(ctx):

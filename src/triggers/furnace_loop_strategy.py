@@ -91,38 +91,12 @@ def _clear():
     runtime_state.clear(_SESSION_STATE_KEY, None)
 
 
+# 2026-09-06：換手判斷邏輯搬到 weakness_matcher.TopSelector.
+# decide_switch_commands()，full_clear_strategy.py 也要用同一套，不要
+# 兩個 Strategy 檔案各自維護一份。這裡保留一個同名薄包裝，避免這支檔案
+# 內其他地方(以及外部若有引用)要跟著改呼叫方式。
 def _decide_switch_commands(roster, weakness, rules):
-    """回傳需要送出的換手指令列表(可能是空列表)。純函式，方便測試，不做
-    任何 I/O，也不呼叫 executor/scheduler。"""
-    current_main = next((t for t in roster if t.get("status") == "出戰"), None)
-    current_sub = next((t for t in roster if t.get("status") == "副陀螺"), None)
-
-    main_pick, sub_pick = TopSelector.recommend_pair(roster, weakness, rules, boss_type=weakness.boss_type)
-
-    commands = []
-
-    main_ok = bool(current_main) and current_main.get("element") == weakness.current_element
-    if not main_ok and main_pick and current_main is not main_pick:
-        commands.append(f"出戰 {main_pick.get('index')}")
-
-    # 副手要相生的對象一律是 weakness.current_element：main_ok 時目前主手
-    # 本來就已經是這個屬性；main_ok 為 False 時換完之後的主手也會是這個
-    # 屬性——兩種情況答案相同，不用分支各算一次。
-    generating_element = None
-    for src, dst in rules.get("element_generate", {}).items():
-        if dst == weakness.current_element:
-            generating_element = src
-            break
-
-    sub_ok = bool(current_sub) and generating_element and current_sub.get("element") == generating_element
-    if not sub_ok and sub_pick and current_sub is not sub_pick:
-        # 2026-09-05 修正：指令是「副手 {編號}」，不是「副陀螺 {編號}」——
-        # 「副陀螺」是遊戲回覆訊息裡用來「稱呼」這個欄位的名詞(顯示用)，
-        # 不是實際可以送出的指令字串，兩者長得像但不一樣，之前搞混了。
-        # 確認依據：config/aliases.json 的「備戰」別名定義 ["出戰 {1}", "副手 {2}"]。
-        commands.append(f"副手 {sub_pick.get('index')}")
-
-    return commands
+    return TopSelector.decide_switch_commands(roster, weakness, rules)
 
 
 def start(text, base_dir, account_id, reason="次數還沒用完，先確認陣容再連續討伐"):

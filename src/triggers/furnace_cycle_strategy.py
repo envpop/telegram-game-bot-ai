@@ -70,6 +70,7 @@ furnace_loop 還是 full_clear，也不管重置完之後接下來要幹嘛，�
   這裡不用跟著改——它們只認 shape 解析出來的欄位(breakthrough/exploded)，
   不重複解析原始文字。
 """
+import asyncio
 import random
 import time
 
@@ -82,17 +83,17 @@ SYSTEM_KEY = auto_toggle.WORLD_BOSS
 # 投爐每次的固定數量——只有「第一次投爐(剛燒穿，還不知道目前爐能%)」
 # 會用到這個值，之後每次都改用 _feed_quantity_for_gap() 動態算。
 # 2026-09-04 先抓一個保守的起始值，需要熊依實際碎片存量調整。
-FEED_QUANTITY = 160
+FEED_QUANTITY = 100
 
 # 投爐的爐能估算：官方講「約×3」，這裡刻意打八五折抓保守值(×2.55)，
 # 寧可多投一次炸掉，也不要因為運氣差投不夠還要再送一次訊息——反正投
 # 超過 500% 的部分不會浪費，見檔頭說明。
-FEED_ENERGY_TARGET = 500
+FEED_ENERGY_TARGET = 480
 FEED_ENERGY_MULTIPLIER = 3
 FEED_SAFETY_MARGIN = 0.85
 
 # 觀火間隔：一般 3.5~7 秒亂數，爐溫接近時縮短。
-WATCH_DELAY_NORMAL = (3.5, 7.0)
+WATCH_DELAY_NORMAL = (4.5, 8.6)
 WATCH_DELAY_NEAR_BREAKTHROUGH = 2.0
 WATCH_NEAR_BREAKTHROUGH_THRESHOLD = 94
 
@@ -117,10 +118,36 @@ def _mark_active():
     runtime_state.set_until(_SESSION_STATE_KEY, None, time.time() + SESSION_TIMEOUT_SECONDS)
 
 
+_session_end_callbacks = []
+
+
+def on_session_end(callback):
+    """讓其他模組登記「爐火流程結束時要通知我」的回呼函式，跟
+    guard_clear_strategy.on_session_end() 同一種設計理由：這支模組不該
+    反過來認識呼叫端是 furnace_loop_strategy 還是 full_clear_strategy
+    (或未來還有誰)，只負責「結束了，通知所有登記過的人」。
+
+    2026-09-06 新增，給 full_clear_strategy.py 用：次數用完時爐火重置
+    不像 furnace_loop 打完就停，而是重置完要接著恢復攻擊——需要知道
+    「爐火流程什麼時候真的結束了」才能接手，不能用猜的。
+
+    callback 是 async function，簽名 callback() -> None，不吃參數、不
+    回傳有意義的值。用 asyncio.create_task() 觸發(fire-and-forget)，
+    不會阻塞這支模組自己的判斷流程，也不會因為某個 callback 出錯而讓
+    爐火流程本身跟著壞掉。呼叫端要自己在 callback 裡檢查「這次結束跟
+    我有沒有關係」(例如 full_clear_strategy 要自己查 is_active())——
+    這裡不區分「是誰的爐火流程結束了」，因為同一時間只會有一個爐火
+    流程在跑(這支 bot 一次只服務一個帳號)。
+    """
+    _session_end_callbacks.append(callback)
+
+
 def _clear():
     global _phase
     _phase = None
     runtime_state.clear(_SESSION_STATE_KEY, None)
+    for callback in _session_end_callbacks:
+        asyncio.create_task(callback())
 
 
 def start(reason: str = "次數用完，開始爐火重置流程"):
@@ -247,3 +274,40 @@ def decide(ctx):
         return _handle_feed_blocked(ctx)
 
     return None
+
+
+# ============================================================
+# 終端機指令：/furnace
+# ============================================================
+# 統一介面：async def handle_command(text, base_dir, account_id) -> None
+# 跟 /wbmode、/auto 同一套介面，main.py 用登記表統一呼叫。
+#
+# 2026-09-06 新增：is_active() 這個 session 旗標存在 runtime_state
+# (記憶體內，不會寫進檔案)，斷線重連或程式重啟後會消失——就算手動打
+# 「觀火」，decide() 也不會自動接手後續，因為它判斷「這不歸我管」。
+# 這支指令讓熊在這種情況下手動重新啟動 session，之後的觀火/投爐回覆
+# 就會恢復自動接力，不用整段自己手動跑完。
+
+_FURNACE_USAGE = ("[錯誤] /furnace 用法：\n"
+                   "  /furnace start   手動(重新)啟動爐火流程 session，並送出「觀火」\n"
+                   "                   （斷線重連、程式重啟後 session 會消失，用這個接回去）\n"
+                   "  /furnace status  查看目前 session 是否進行中、卡在哪個階段")
+
+
+async def handle_command(text, base_dir, account_id):
+    parts = text.split()
+    if len(parts) == 2 and parts[1] == "start":
+        if is_active():
+            print(f"[爐火流程] session 已經在進行中(階段：{_phase})，不用重新啟動；"
+                  f"如果確定是卡死的舊 session，可以先 /furnace status 確認")
+            return
+        action = start(reason="手動重新啟動爐火流程")
+        await actions.execute(action)
+        return
+    if len(parts) == 2 and parts[1] == "status":
+        if is_active():
+            print(f"[爐火流程] session 進行中，目前階段：{_phase}")
+        else:
+            print("[爐火流程] 目前沒有進行中的 session")
+        return
+    print(_FURNACE_USAGE)

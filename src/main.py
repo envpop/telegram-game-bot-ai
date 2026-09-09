@@ -6,6 +6,8 @@ import monitor
 import executor
 import scheduler
 import data_store
+import world_boss_mode
+from triggers import furnace_cycle_strategy
 from triggers import world_boss_strategy
 from triggers import main_tower_battle_strategy
 from triggers import guard_clear_strategy
@@ -14,6 +16,7 @@ from triggers import satellite_naming_strategy
 from triggers import sakura_strategy
 from triggers import furnace_cycle_strategy
 from triggers import furnace_loop_strategy
+from triggers import full_clear_strategy
 from parser import MessageRouter
 from log_maintenance import run_maintenance
 from display_formatter import format_display_line
@@ -23,10 +26,9 @@ from strategies.query_advisor_strategy import QueryAdvisorStrategy
 from strategies.market_tracking_strategy import MarketTrackingStrategy
 from strategies.chart_correlation_strategy import ChartCorrelationStrategy
 from strategies.contract_tracking_strategy import ContractTrackingStrategy
-from message_buffer import MessageBuffer
 from strategies.inventory_display_strategy import InventoryDisplayStrategy
 from strategies.battle_status_line_strategy import BattleStatusLineStrategy
-import world_boss_mode
+from message_buffer import MessageBuffer
 
 import os
 os.system("title MOMOBearBot - main")
@@ -98,6 +100,7 @@ TERMINAL_COMMANDS = {
     "/sakura": sakura_strategy.handle_command,
     "/click": executor.handle_click_command,
     "/wbmode":world_boss_mode.handle_command,
+    "/furnace": furnace_cycle_strategy.handle_command,
 }
 
 
