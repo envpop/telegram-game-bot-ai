@@ -26,7 +26,7 @@ satellite_catalog_display.py —— 衛星圖鑑「重點顯示」格式化
 
 from collections import defaultdict
 
-MAIN_THRESHOLD = 7
+MAIN_THRESHOLD = 8
 SPECIAL_GOLD_SKILLS = ["星隕", "山嶽", "汲魂", "過載"]
 
 
