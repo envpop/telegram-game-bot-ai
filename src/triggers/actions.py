@@ -129,44 +129,55 @@ async def execute(action: Action) -> None:
     await runner(action.payload)
 
 
+def dict_to_action(action_dict: dict):
+    """跟 execute_dict() 做一樣的 mode 判斷，但只轉換不執行，回傳
+    Action 物件(mode 是 None 或不認得的值時回傳 None)。
+
+    2026-09-06 新增：world_boss_strategy.py 的 decide(ctx)（查詢那道
+    保險，經過 action_dispatcher.py 的 server_triggers 統一入口）原本
+    自己手動判斷 action["mode"]=="now" 才轉成 Action，"scheduled"/
+    "sequence" 會被直接忽略——查詢觸發 furnace_loop/full_clear(需要
+    換手，回傳 "sequence")時完全不會有動作，是個潛在的漏洞。decide(ctx)
+    需要「轉成 Action 但不要在這裡就執行」(執行是 action_dispatcher.py
+    收到回傳值後才做的事)，跟 execute_dict()「轉換後直接執行」的用途
+    不同，所以拆成兩個函式，execute_dict() 內部呼叫這支函式重複利用
+    同一套轉換邏輯。
+    """
+    mode = action_dict.get("mode")
+    if mode == "now":
+        return send_now(
+            action_dict["command"], chat_id=action_dict.get("chat_id"), reason=action_dict.get("reason"),
+        )
+    if mode == "scheduled":
+        steps = action_dict.get("steps") or [action_dict["command"]]
+        return schedule(
+            steps, delay_seconds=action_dict.get("delay_seconds", 0.0),
+            chat_id=action_dict.get("chat_id"), reason=action_dict.get("reason"),
+            repeat=action_dict.get("repeat", 1), interval=action_dict.get("interval", (0.0, 0.0)),
+        )
+    if mode == "sequence":
+        return send_sequence(
+            action_dict["commands"], chat_id=action_dict.get("chat_id"),
+            interval_seconds=action_dict.get("interval_seconds", 2), reason=action_dict.get("reason"),
+        )
+    return None
+
+
 async def execute_dict(action_dict: dict) -> bool:
-    """把「plain dict」格式的決策結果轉成 Action 並執行。
+    """把「plain dict」格式的決策結果轉成 Action 並直接執行(給
+    _handle_announcement()、resume_pending_boss() 這類「決定了就地執行，
+    不用回傳給別人再執行」的呼叫端用；需要回傳 Action 給呼叫端自己執行
+    的场景用 dict_to_action())。
 
     這個 dict 格式(mode: "now"/"scheduled"/"sequence"/None，配上
     command/commands/delay_seconds/interval_seconds/chat_id/reason 等
     key)是 world_boss_strategy.decide_action() 這類公告路徑策略模組沿用
     的舊介面，比這支檔案的 Action dataclass 更早出現。
 
-    2026-09-05 抽成共用函式：action_dispatcher.py 的公告迴圈、以及
-    furnace_loop_strategy.py「護衛清完後接續處理排隊中的王」這類需要
-    「事後補送」plain-dict 動作的呼叫端，都需要同一套轉換邏輯，抽出來
-    避免兩邊各自重寫一次、以後改動只需要改一個地方。
-
     回傳 True 代表真的送出了什麼，False 代表 mode 是 None(沒有動作)。
     """
-    mode = action_dict.get("mode")
-    if mode == "now":
-        await execute(send_now(
-            action_dict["command"], chat_id=action_dict.get("chat_id"), reason=action_dict.get("reason"),
-        ))
-        return True
-    if mode == "scheduled":
-        # steps(多個不同指令依序執行一次，例如換手→換手→攻擊)是
-        # 2026-09-06 新增；沒給 steps 的舊呼叫端(command 單數)照舊只送
-        # 一個指令，維持相容。repeat/interval 是 sakura_strategy.py 這種
-        # 「同一個指令重複很多次」在用，兩種用法可以並存(steps 依序跑
-        # 完一輪，repeat>1 時整輪再重複)。
-        steps = action_dict.get("steps") or [action_dict["command"]]
-        await execute(schedule(
-            steps, delay_seconds=action_dict.get("delay_seconds", 0.0),
-            chat_id=action_dict.get("chat_id"), reason=action_dict.get("reason"),
-            repeat=action_dict.get("repeat", 1), interval=action_dict.get("interval", (0.0, 0.0)),
-        ))
-        return True
-    if mode == "sequence":
-        await execute(send_sequence(
-            action_dict["commands"], chat_id=action_dict.get("chat_id"),
-            interval_seconds=action_dict.get("interval_seconds", 2), reason=action_dict.get("reason"),
-        ))
-        return True
-    return False
+    action = dict_to_action(action_dict)
+    if action is None:
+        return False
+    await execute(action)
+    return True

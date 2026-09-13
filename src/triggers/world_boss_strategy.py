@@ -4,35 +4,51 @@ world_boss_strategy.py —— 世界王討伐時機判斷（決策層）
 跟培育策略一樣的分工：這裡只負責判斷「現在該不該打」，不負責送出指令
 （那是 executor 的事），也不負責記錄按鈕/訊息（那是 monitor 的事）。
 
-核心原則（已跟使用者確認）：
-  - 目標是「每一隻王（用王的名字識別）至少成功出手一次」，不是每次變身都打
-  - 打過一次就算達標，超過也沒關係，不用嚴格控制次數
-  - 用王的名字當作記錄 key，不用階數——階數需要靠推算，bot 可能中斷監控
-    導致推算錯誤；王的名字每則訊息都直接帶有，不需要依賴任何先前狀態
-  - 討伐次數上限不用管：超過上限打了也只是無效動作，沒有損失
+用王的名字當作記錄 key，不用階數——階數需要靠推算，bot 可能中斷監控
+導致推算錯誤；王的名字每則訊息都直接帶有，不需要依賴任何先前狀態。
 
 三道觸發時機（決策優先序，但彼此獨立、不互相依賴）：
-  1. 出現（boss_spawn）      —— 主要時機，王剛出現立刻打
-  2. 變身（phase_transition）—— 保險，出現沒接住時，變身後（硬直60秒）補一次
-  3. 查詢「世界王」回覆      —— 第二道保險，使用者手動查詢時，bot 順便檢查要不要補刀
+  1. 出現（boss_spawn）      —— 主要時機，王剛出現立刻判斷
+  2. 變身（phase_transition）—— 保險，出現沒接住時，變身後（硬直60秒）補一次；
+                                也是「打到一半換相被硬直卡住」時恢復攻擊的時機
+  3. 查詢「世界王」回覆      —— 第二道保險，也是 auto/furnace_loop/full_clear
+                                這幾個模式「不確定現在該做什麼」時的統一確認點
                                 （這個觸發來自不同的 chat，用另一個函式處理）
+
+=== 2026-09-06 大改版：拿掉所有「流程進行中」的 session 狀態 ===
+熊指出：furnace_loop_strategy/full_clear_strategy 原本各自維護
+is_active() 這種「記住自己在做什麼」的旗標，斷線重連後容易變成過時的
+錯誤記憶(記得在忙，但遊戲實際狀態早就不是那樣了)。改成「不確定就查
+world_boss_progress.py 裡這隻王的持久記錄，或直接送一次『世界王』查詢，
+不要記住自己在做什麼」。
+
+三個模式現在都靠 world_boss_progress.py 的每王記錄(mode/count_exhausted/
+furnace_completed)判斷，不再需要任何「進行中」旗標：
+    - touch：摸到就算完成，不用管爐火。
+    - furnace_loop：次數用完時檢查 furnace_completed，還沒完成就觸發
+      爐火重置一次；已經完成過就不再觸發。
+    - full_clear：次數用完一律觸發爐火重置，不設次數上限。
+
+爐火重置完成後「要不要恢復攻擊」也不用專門的完成通知去反推——直接送
+一次「世界王」查詢（見 _query_after_furnace_reset()），查詢回覆看到
+「之前記錄是次數用完、現在卻沒用完」就知道是重置剛完成，交給
+decide_action_from_status_query() 統一判斷要不要恢復攻擊。
+
+戰報找不到王名(只有手動連續討伐剛好把王打死才會發生)時，一樣直接送
+「世界王」查詢，不用猜是哪一隻王——查詢回覆本來就會帶出王名。
 
 用法（公告頻道事件，出現/變身/結束/戰況/護衛）：
     from world_boss_strategy import load_catalog, decide_action
 
     catalog = load_catalog(BASE_DIR)
     action = decide_action(record["text"], catalog, BASE_DIR, ACCOUNT_ID)
-    if action["mode"] == "now":
-        await executor.send_now(action["command"], chat_id=action["chat_id"], reason=action["reason"])
-    elif action["mode"] == "scheduled":
-        run_at = datetime.now(LOCAL_TZ) + timedelta(seconds=action["delay_seconds"])
-        asyncio.create_task(executor.schedule_at(run_at, action["command"], chat_id=action["chat_id"], reason=action["reason"]))
+    # action 是 plain dict，用 triggers.actions.execute_dict(action) 執行
 
 用法（「世界王」查詢回覆，不同 chat；新版走統一觸發清單，見檔尾 decide(ctx)）：
     from triggers.world_boss_strategy import decide
-    action = decide(ctx)  # ctx 是 triggers.context.TriggerContext
+    action = decide(ctx)  # ctx 是 triggers.context.TriggerContext，回傳 Action
 
-decide_action_from_status_query() 本身保留、邏輯不變，decide(ctx) 只是把
+decide_action_from_status_query() 本身保留、介面不變，decide(ctx) 只是把
 「這則訊息歸不歸我管」的判斷（開關狀態）跟轉成 Action 這兩件事包在外層。
 公告頻道那一路的 decide_action() 維持原本 main.py 的 announcement_strategies
 清單用法，不受這次調整影響。
@@ -48,6 +64,7 @@ import world_boss_mode
 import world_boss_progress
 from parsing.response_shapes import world_boss_status
 from triggers import actions
+from triggers import furnace_cycle_strategy
 from triggers import furnace_loop_strategy
 from triggers import full_clear_strategy
 from triggers import guard_clear_strategy
@@ -94,6 +111,20 @@ def _extract_name(text, pattern):
 
 _NO_ACTION = {"mode": None, "delay_seconds": None, "command": None, "chat_id": None, "reason": None}
 
+# 這支 bot 一次只服務一個帳號——爐火重置完成的無參數回呼(見
+# _query_after_furnace_reset())沒辦法知道要查詢哪個帳號，只能記住
+# 「最後一次是誰在互動」。這裡刻意在每一次世界王相關判斷(不只是流程
+# 起點)都更新，盡量降低過時的風險，跟之前討論過的「記住流程進行中」
+# 性質不同——這只是「目前是哪個帳號在跑」，幾乎不會變的事實，不是會
+# 過期/導致誤判的「決策狀態」。
+_last_known_context = None  # {"base_dir","account_id"} 或 None
+
+
+def _remember_context(base_dir, account_id):
+    global _last_known_context
+    _last_known_context = {"base_dir": base_dir, "account_id": account_id}
+
+
 # 王出現時剛好護衛也在，兩邊都會換手/搶陣容（熊 2026-09-05／09-06 反映）。
 # 判斷準則是「這隻王身上有沒有護衛」+「清護衛的自動開關有沒有開」——
 # 不是查 guard_clear_strategy.is_session_active()：王剛出現的當下，
@@ -101,10 +132,6 @@ _NO_ACTION = {"mode": None, "delay_seconds": None, "command": None, "chat_id": N
 # session 狀態判斷會有時間差漏洞。只要「有護衛」且「開關開著」，就代表
 # 護衛遲早會被清，世界王(不管哪個模式)都先讓路，不用等到「session 真的
 # 開始了」才知道要讓路。
-#
-# 這個排隊機制本來只放在 furnace_loop_strategy.py(因為當初只有它會換手)，
-# 2026-09-06 改成放在這裡、對所有模式生效，因為 touch 模式也會跟清護衛
-# 搶「出戰」這個共用資源。
 _pending_boss = None  # {"text","name","base_dir","account_id"} 或 None
 
 
@@ -125,8 +152,9 @@ def _queue_pending_boss(text, name, base_dir, account_id):
 
 
 # 護衛清完的瞬間就立刻換手/攻擊，容易撞到清護衛最後一個動作本身的
-# 伺服器冷卻(熊 2026-09-06 反映)。留一個小緩衝，不用等到下一則訊息，
-# 純粹讓伺服器喘口氣——數字是拍腦袋的保守值，不是遊戲機制數字。
+# 伺服器冷卻(熊 2026-09-06 反映；熊也提到這個緩衝可能還要再調整，目前
+# 先維持這個保守值)。留一個小緩衝，不用等到下一則訊息，純粹讓伺服器
+# 喘口氣——數字是拍腦袋的保守值，不是遊戲機制數字。
 RESUME_BUFFER_SECONDS = 3.0
 
 
@@ -143,6 +171,7 @@ async def resume_pending_boss():
     await asyncio.sleep(RESUME_BUFFER_SECONDS)
 
     mode, mode_reason = _current_mode(pending["text"], pending["base_dir"], pending["account_id"])
+    world_boss_progress.mark_mode(pending["base_dir"], pending["account_id"], pending["name"], mode)
     action_dict = _dispatch_for_mode(
         pending["text"], pending["name"], mode, mode_reason, pending["base_dir"], pending["account_id"],
     )
@@ -152,6 +181,28 @@ async def resume_pending_boss():
 
 
 guard_clear_strategy.on_session_end(resume_pending_boss)
+
+
+async def _query_after_furnace_reset():
+    """furnace_cycle_strategy 的爐火流程結束時(不管是正常炸爆還是被
+    搶先重置)透過 on_session_end() 回呼觸發。不需要知道是 furnace_loop
+    還是 full_clear 觸發的這次重置，也不需要記得是哪一隻王——直接送
+    一次「世界王」查詢，回覆會自然帶出王名跟最新次數，交給
+    decide_action_from_status_query() 判斷「次數補回來了，該不該恢復
+    攻擊／該標記完成」（熊 2026-09-06 確認：出問題時僅做一次查詢，
+    還有問題就放過，不重試）。"""
+    if _last_known_context is None:
+        return
+    base_dir = _last_known_context["base_dir"]
+    account_id = _last_known_context["account_id"]
+    catalog = load_catalog(base_dir)
+    chat_id = catalog["status_query"]["chat_id"]
+    await actions.execute(actions.send_now(
+        "世界王", chat_id=chat_id, reason="爐火流程結束，查詢確認是否需要恢復攻擊",
+    ))
+
+
+furnace_cycle_strategy.on_session_end(_query_after_furnace_reset)
 
 
 def _dispatch_for_mode(text, name, mode, mode_reason, base_dir, account_id, context_label="剛出現"):
@@ -202,6 +253,8 @@ def decide_action(text, catalog, base_dir, account_id):
     if event is None:
         return _NO_ACTION
 
+    _remember_context(base_dir, account_id)
+
     event_id = event["event_id"]
     # 討伐指令固定送去摸熊神社(bot 私訊)，不是送回偵測到訊息的公告頻道——
     # 公告頻道是唯讀的，bot 沒有發言權限，送過去會直接被 Telegram 拒絕
@@ -228,6 +281,7 @@ def decide_action(text, catalog, base_dir, account_id):
             return _NO_ACTION
 
         mode, mode_reason = _current_mode(text, base_dir, account_id)
+        world_boss_progress.mark_mode(base_dir, account_id, name, mode)
         return _dispatch_for_mode(text, name, mode, mode_reason, base_dir, account_id)
 
     if event_id == "phase_transition":
@@ -238,43 +292,40 @@ def decide_action(text, catalog, base_dir, account_id):
 
         delay = event.get("cooldown_seconds", 60)
 
-        # 爐火流程(furnace_loop)或全程流程(full_clear)進行中如果剛好換相，
-        # 代表次數還沒用完、但攻擊被硬直卡住了——不是次數用完，不能直接
-        # 判斷成「這一輪結束」去啟動爐火重置。硬直 delay 秒後重送一次
-        # 「連續討伐」繼續打，沿用既有的變身硬直秒數，不用另外訂數字
-        # （熊 2026-09-06 反映）。兩個模式同一時間只會有一個在跑(同一隻
-        # 王只會判定成一種 mode)，依序檢查就好，不會衝突。
-        if furnace_loop_strategy.is_active():
-            print(f"[世界王] 「{name}」換相，爐火流程還在進行中（次數還沒用完），{delay} 秒後繼續連續討伐")
+        # 2026-09-06 改成查 world_boss_progress 的持久記錄，不再查
+        # is_active() 這種 session 旗標(已經拿掉)。換相時「這隻王原本
+        # 判定成什麼模式」直接查表就有答案，不需要「流程是否正在跑」
+        # 這種額外的狀態。
+        mode = world_boss_progress.get_mode(base_dir, account_id, name)
+
+        if mode is None:
+            # 沒記錄過(可能是出現公告漏接)，現在補判斷一次。
+            if world_boss_progress.has_hit_today(base_dir, account_id, name):
+                return _NO_ACTION
+            world_boss_progress.mark_hit(base_dir, account_id, name)
+            mode, mode_reason = _current_mode(text, base_dir, account_id)
+            world_boss_progress.mark_mode(base_dir, account_id, name, mode)
+            print(f"[世界王] 「{name}」換相時才第一次判定模式：{mode}（{mode_reason}）")
+
+        if mode == world_boss_mode.FURNACE_LOOP:
+            print(f"[世界王] 「{name}」換相，爐火模式，{delay} 秒後繼續連續討伐")
             return furnace_loop_strategy.handle_phase_transition(text, delay, base_dir, account_id)
-        if full_clear_strategy.is_active():
-            print(f"[世界王] 「{name}」換相，全程流程還在進行中（次數還沒用完），{delay} 秒後繼續連續討伐")
+        if mode == world_boss_mode.FULL_CLEAR:
+            print(f"[世界王] 「{name}」換相，全程模式，{delay} 秒後繼續連續討伐")
             return full_clear_strategy.handle_phase_transition(text, delay, base_dir, account_id)
 
-        if world_boss_progress.has_hit_today(base_dir, account_id, name):
-            return _NO_ACTION
-
-        world_boss_progress.mark_hit(base_dir, account_id, name)
-
-        if _should_wait_for_guards(text, base_dir):
-            _queue_pending_boss(text, name, base_dir, account_id)
-            return _NO_ACTION
-
-        mode, mode_reason = _current_mode(text, base_dir, account_id)
-        if mode != world_boss_mode.TOUCH:
-            print(f"[世界王] 「{name}」判定為 {mode}（{mode_reason}），不是 touch，先不摸一下（等 {mode} 的行為邏輯補上）")
-            return _NO_ACTION
-        return {"mode": "scheduled", "delay_seconds": delay, "command": command, "chat_id": chat_id,
-                "reason": f"世界王「{name}」變身，今天還沒打過，等硬直 {delay} 秒後討伐"}
+        # touch：換相不影響「有沒有打過」這件事，touch 只求打過一次，
+        # 不需要因為換相又補一次。
+        return _NO_ACTION
 
     if event_id == "boss_defeated":
         name = _extract_name(text, event["name_pattern"])
         if name and not world_boss_progress.has_hit_today(base_dir, account_id, name):
             print(f"[世界王] ⚠️ 「{name}」已被討伐，但今天沒有打過的記錄——出現/變身/查詢三道保險都沒接住，這隻已經錯過了。")
-        # 2026-09-06 新增：full_clear 模式要靠這則公告知道「王死了，該
-        # 結束流程了」(熊確認沒有其他判斷方式，先用這個)。furnace_loop
-        # 不需要對應——它打完一輪+爐火一次就停，不會等到王死。
-        full_clear_strategy.on_boss_defeated()
+        # 2026-09-06：不再需要專門的「結束流程」動作——full_clear/
+        # furnace_loop 都已經拿掉 session 狀態，沒有「進行中」這件事
+        # 需要被結束。王死了之後自然不會再有戰報/查詢顯示這隻王的次數
+        # 資訊，本身就是終止訊號，不用額外處理。
         return _NO_ACTION
 
     # periodic_status_report / guards_cleared：無動作
@@ -282,8 +333,10 @@ def decide_action(text, catalog, base_dir, account_id):
 
 
 def decide_action_from_status_query(text, catalog, base_dir, account_id):
-    """「世界王」查詢指令回覆的判斷入口（第三道保險）。跟 decide_action 是分開的
-    函式，因為這個觸發來自不同的 chat、不同的訊息格式，不是被動監聽公告頻道。
+    """「世界王」查詢指令回覆的判斷入口（第三道保險，也是 furnace_loop/
+    full_clear「不確定現在該做什麼」時的統一確認點）。跟 decide_action
+    是分開的函式，因為這個觸發來自不同的 chat、不同的訊息格式，不是
+    被動監聽公告頻道。
     """
     query = catalog["status_query"]
     if query["trigger_pattern"] not in text:
@@ -294,11 +347,54 @@ def decide_action_from_status_query(text, catalog, base_dir, account_id):
         print(f"[世界王] ⚠️ 偵測到查詢回覆，但抓不到王的名字，跳過判斷：{text[:40]}...")
         return _NO_ACTION
 
-    if world_boss_progress.has_hit_today(base_dir, account_id, name):
-        return _NO_ACTION  # 今天已經打過了，不用補刀
+    _remember_context(base_dir, account_id)
 
     if query["alive_check_pattern"] in text:
         return _NO_ACTION  # 王已經死了，補不了
+
+    # 2026-09-06：查詢回覆本身就帶著「今日 X/Y 次」，用這個資訊直接判斷
+    # 次數是否用完並持久化記錄——不用等戰報，查詢本身就是最新狀態。
+    # 熊確認：沒有這個欄位代表沒有正在活著的世界王了。
+    parsed = world_boss_status.parse(text) if world_boss_status.signature(text) else {}
+    daily_count = parsed.get("your_daily_count")
+    daily_limit = parsed.get("your_daily_limit")
+
+    if daily_count is None or daily_limit is None:
+        return _NO_ACTION  # 沒有活著的世界王，不用往下判斷
+
+    exhausted_now = daily_count >= daily_limit
+    was_exhausted = world_boss_progress.is_count_exhausted(base_dir, account_id, name)
+
+    if exhausted_now:
+        world_boss_progress.mark_count_exhausted(base_dir, account_id, name)
+        mode = world_boss_progress.get_mode(base_dir, account_id, name)
+        if mode == world_boss_mode.FULL_CLEAR:
+            print(f"[世界王] 查詢「{name}」次數已用完，全程模式自動觸發爐火重置")
+            return furnace_cycle_strategy.start(reason=f"查詢確認「{name}」次數已用完，全程模式自動爐火重置")
+        if mode == world_boss_mode.FURNACE_LOOP and not world_boss_progress.is_furnace_completed(base_dir, account_id, name):
+            print(f"[世界王] 查詢「{name}」次數已用完，爐火模式自動觸發爐火重置")
+            return furnace_cycle_strategy.start(reason=f"查詢確認「{name}」次數已用完，爐火模式自動爐火重置")
+        return _NO_ACTION  # touch，或 furnace_loop 已經重置過一次了，不用再動作
+
+    if was_exhausted:
+        # 之前記錄是用完的，現在查詢卻顯示沒用完 —— 代表爐火重置剛完成，
+        # 次數補回來了。清掉標記，才能正確偵測「下一輪」次數用完
+        # (full_clear 需要重複偵測很多輪)。
+        world_boss_progress.clear_count_exhausted(base_dir, account_id, name)
+        mode = world_boss_progress.get_mode(base_dir, account_id, name)
+        if mode == world_boss_mode.FULL_CLEAR:
+            print(f"[世界王] 「{name}」爐火重置完成(次數已補回)，全程模式恢復連續討伐")
+            catalog_chat_id = catalog["status_query"]["chat_id"]
+            return {"mode": "now", "command": "連續討伐", "chat_id": catalog_chat_id,
+                    "reason": f"「{name}」爐火重置完成，全程模式恢復連續討伐"}
+        if mode == world_boss_mode.FURNACE_LOOP:
+            world_boss_progress.mark_furnace_completed(base_dir, account_id, name)
+            print(f"[世界王] 「{name}」爐火重置完成，爐火模式到此為止，不繼續打")
+        return _NO_ACTION
+
+    # 真正第一次看到這隻王、還沒打過。
+    if world_boss_progress.has_hit_today(base_dir, account_id, name):
+        return _NO_ACTION
 
     world_boss_progress.mark_hit(base_dir, account_id, name)
 
@@ -307,6 +403,7 @@ def decide_action_from_status_query(text, catalog, base_dir, account_id):
         return _NO_ACTION
 
     mode, mode_reason = _current_mode(text, base_dir, account_id)
+    world_boss_progress.mark_mode(base_dir, account_id, name, mode)
     return _dispatch_for_mode(text, name, mode, mode_reason, base_dir, account_id, context_label="查詢時發現")
 
 
@@ -314,13 +411,25 @@ def decide(ctx):
     """action_dispatcher.py 統一觸發清單入口（server 訊息這一路，第三道保險），
     取代原本的 _handle_world_boss_status_query()；跟公告頻道那一路的
     decide_action() 是分開的兩個函式，維持原本檔頭說明的分工，只是這裡
-    多包一層轉成 Action。開關關閉時 stop=False（不吃掉訊息，放行給其他
-    trigger），跟原本行為一致。"""
+    多包一層轉成 Action。開關關閉時回傳 None（不吃掉訊息，放行給其他
+    trigger），跟原本行為一致。
+
+    2026-09-06 修正：原本這裡只認 action["mode"]=="now"，"scheduled"/
+    "sequence" 會被直接忽略——查詢觸發 furnace_loop/full_clear(需要
+    換手，回傳 "sequence")時完全不會有動作，是個潛在的漏洞。改用
+    actions.dict_to_action() 統一轉換，三種 mode 都能正確處理。
+
+    decide_action_from_status_query() 觸發爐火重置時，回傳的是
+    furnace_cycle_strategy.start() 直接給的 Action 物件(不是 plain
+    dict)——因為那支函式本來就是設計給 server_trigger 的 decide(ctx)
+    用，這裡剛好也是同一種介面，直接沿用，不用另外包一層轉換，兩種
+    回傳型別在這裡分流處理。
+    """
     if not ctx.is_enabled(SYSTEM_KEY):
         return None
 
     catalog = load_catalog(ctx.base_dir)
     action = decide_action_from_status_query(ctx.text, catalog, ctx.base_dir, ctx.account_id)
-    if action["mode"] == "now":
-        return actions.send_now(action["command"], chat_id=action["chat_id"], reason=action["reason"])
-    return None
+    if isinstance(action, dict):
+        return actions.dict_to_action(action)
+    return action  # 已經是 Action 物件

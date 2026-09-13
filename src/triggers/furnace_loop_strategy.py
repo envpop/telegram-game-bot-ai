@@ -9,94 +9,64 @@ furnace_loop_strategy.py —— 世界王「爐火」模式(furnace_loop)的上�
     不同——見 world_boss_mode.py 的模式說明)
 
 由 world_boss_strategy.py 在判斷 mode==furnace_loop 時呼叫 start()
-啟動，之後靠 decide(ctx) 反應戰報接力；觀火/投爐那段完全交給
+啟動；之後靠 decide(ctx) 反應戰報接力，觀火/投爐那段完全交給
 furnace_cycle_strategy.py，不重寫（熊 2026-09-04 明確要求）。
+
+=== 2026-09-06 大改版：拿掉「流程進行中」的 session 狀態 ===
+原本用 is_active()/runtime_state 記錄「furnace_loop 是不是正在跑」，
+熊指出這種「記住自己在做什麼」的設計，斷線重連後容易變成過時的錯誤
+記憶(記得在忙，但遊戲實際狀態早就不是那樣了)，要求整個拿掉，改成
+「不確定就查當下的紀錄／查詢遊戲，不要記住自己在做什麼」。
+
+現在的判斷完全靠 world_boss_progress.py 裡「這隻王」的持久記錄
+(mode/count_exhausted/furnace_completed)，不是「這個流程是否正在跑」
+這種旗標：
+    - 次數用完：直接查表看這隻王的 mode 是不是 furnace_loop、
+      furnace_completed 是不是還沒完成，是的話就觸發爐火——不需要知道
+      「我是不是正在追蹤這隻王」，因為表格本身就是答案。
+    - 找不到王名(只有手動連續討伐剛好把王打死才會發生，熊 2026-09-06
+      說明)：直接送「世界王」查詢，查詢回覆自然帶出王名，交給
+      world_boss_strategy.decide_action_from_status_query() 處理，
+      不用自己猜是哪一隻王。
+    - 換相：跟次數用完是不同的訊號(硬直，不是用完)，不需要「這個流程
+      是否正在跑」才能判斷——只要偵測到換相事件，就重新判斷陣容繼續打，
+      不管是誰在打。
 
 === 陣容判斷標準(熊 2026-09-04 確認) ===
 判斷「要不要換」只看屬性有沒有對上，不強求類型也剋制（「屬性對上、戰力
 盡量高就可以」）；但真的要換的話，換手目標不將就，用
-weakness_matcher.TopSelector.recommend_pair() 找「屬性+類型+戰力都最好」
-的陀螺——门槛放寬，換的時候還是換最好的。
-    主手：目前出戰的屬性 == 弱點屬性 就不用換
-    副手：目前副手的屬性 == 相生主手所需屬性 就不用換
-（副手的相生對象一律是「換完之後的主手屬性」，也就是 weakness.current_
-element——不管主手要不要換，換完之後主手一定是這個屬性，判斷副手時
-不用區分主手有沒有換，答案一樣。）
+weakness_matcher.TopSelector.decide_switch_commands() 找「屬性+類型+
+戰力都最好」的陀螺——门槛放寬，換的時候還是換最好的。
 
 === 連續討伐 ===
 熊確認遊戲本身有「連續討伐」指令，伺服器端自己會連續出手，這支模組只送
 一次「連續討伐」，不自己迴圈送「討伐」。跟前面換手指令的間隔可以極短，
-這裡偷懶直接用跟換手同樣的 2 秒間隔送成一組序列，不用另外處理更短的
-間隔（熊確認這樣沒問題）。
+這裡偷懶直接用跟換手同樣的 2 秒間隔送成一組序列（熊確認這樣沒問題）。
 
 === 怎麼判斷次數用完 ===
-反應 world_boss_battle_report shape 的戰報(這支 shape 已經有
-daily_count/daily_limit 欄位，不用新解析)：daily_count >= daily_limit
-時，代表這一輪能打的都打完了，交給 furnace_cycle_strategy.start()。
-「連續討伐」送出後可能收到 1 則或好幾則戰報(目前沒有實際樣本能確認，
-但兩種情況這支程式都能正確處理——反正只在乎「最新一則戰報有沒有到達
-上限」，不管中間收到幾則，不需要為了這個特地要一份樣本)。
+反應 world_boss_continuous_report(連續討伐回覆，逐刀彙總格式)跟
+world_boss_battle_report(單刀戰報)兩種 shape，兩者都有 daily_count/
+daily_limit 欄位，判斷邏輯共用(見 is_daily_count_exhausted())。
 
-如果戰報一直沒到上限、也沒有新戰報進來了(可能是王被打死，或連續討伐
-提前結束)，這支模組不會主動做任何事——這個模式定義上就是「有次數就打，
-沒次數就重置一次」，不是「一定要打到某個結果」，安靜結束是合理行為。
-
-唯一的例外是「換相」：王在連續討伐途中換相會被硬直卡住，次數還沒用完
-但這一輪指令提前中止，不是「次數用完」，不能誤判去啟動爐火重置。
-world_boss_strategy.py 偵測到 phase_transition 事件時，如果這支模組正在
-進行中(is_active())，會呼叫 handle_phase_transition() 而不是走它自己
-原本 touch 模式的判斷，讓 session 續命、硬直過後重送一次「連續討伐」
-（熊 2026-09-06 反映；「換相會不會帶階數/懸賞資訊」目前沒有實際樣本
-確認，不影響這裡的處理——這裡只在乎「續不續攻擊」，不需要那些欄位）。
-
-=== 安全閥 ===
-跟 furnace_cycle_strategy.py 同樣的邏輯：用 runtime_state 的逾時旗標
-避免萬一「連續討伐」的戰報格式跟預期不同、卡住沒觸發 furnace_cycle，
-導致 session 旗標永遠卡在「進行中」擋住下一隻王的判斷。
-
-=== 護衛衝突(不在這支檔案裡處理) ===
-2026-09-06 起，「王出現時剛好有護衛，會跟清護衛搶換手」這個問題的排隊/
-接續機制搬到 world_boss_strategy.py 裡統一處理(因為 touch 模式也會撞到
-同樣的問題，不是 furnace_loop 專屬的)。這支檔案不再持有排隊狀態，也不再
-匯入 guard_clear_strategy。
+=== 換相 ===
+王在連續討伐途中換相會被硬直卡住，次數還沒用完，但這一輪指令提前中止，
+不是「次數用完」，不能誤判去啟動爐火重置。world_boss_strategy.py 偵測到
+phase_transition 事件時會呼叫 handle_phase_transition()，跟次數用完是
+完全獨立的另一條路徑，不共用判斷。
 """
-import time
-
 import auto_toggle
+import world_boss_mode
+import world_boss_progress
 from main_tower_advisor import load_json, RULES_PATH
 from roster_loader import load_roster
 from weakness_matcher import WeaknessParser, TopSelector
 from triggers import actions
 from triggers import furnace_cycle_strategy
-from triggers import runtime_state
 
 SYSTEM_KEY = auto_toggle.WORLD_BOSS
 
 # 換手/連續討伐這組序列的間隔，熊確認的實測值。
 SWITCH_DELAY_SECONDS = 2.0
-
-SESSION_TIMEOUT_SECONDS = 20 * 60
-_SESSION_STATE_KEY = "furnace_loop_active"
-
-
-def is_active() -> bool:
-    return runtime_state.is_active(_SESSION_STATE_KEY, None)
-
-
-def _mark_active():
-    runtime_state.set_until(_SESSION_STATE_KEY, None, time.time() + SESSION_TIMEOUT_SECONDS)
-
-
-def _clear():
-    runtime_state.clear(_SESSION_STATE_KEY, None)
-
-
-# 2026-09-06：換手判斷邏輯搬到 weakness_matcher.TopSelector.
-# decide_switch_commands()，full_clear_strategy.py 也要用同一套，不要
-# 兩個 Strategy 檔案各自維護一份。這裡保留一個同名薄包裝，避免這支檔案
-# 內其他地方(以及外部若有引用)要跟著改呼叫方式。
-def _decide_switch_commands(roster, weakness, rules):
-    return TopSelector.decide_switch_commands(roster, weakness, rules)
 
 
 def start(text, base_dir, account_id, reason="次數還沒用完，先確認陣容再連續討伐"):
@@ -109,8 +79,6 @@ def start(text, base_dir, account_id, reason="次數還沒用完，先確認陣�
     因為呼叫端(world_boss_strategy.decide_action())本身就是走公告路徑的
     plain-dict 介面，被 action_dispatcher.py 的 _handle_announcement()
     同步消費，不能回傳這支模組另一半(decide())用的 Action 物件。
-    "sequence" 是 2026-09-04 為了這裡需要「先換手再攻擊」新加進
-    action_dispatcher.py 的 mode，見該檔案的說明。
     """
     weakness = WeaknessParser.parse(text)
     if weakness is None:
@@ -120,10 +88,8 @@ def start(text, base_dir, account_id, reason="次數還沒用完，先確認陣�
     roster = load_roster(base_dir, account_id)
     rules = load_json(RULES_PATH)
 
-    commands = _decide_switch_commands(roster, weakness, rules)
+    commands = TopSelector.decide_switch_commands(roster, weakness, rules)
     commands.append("連續討伐")
-
-    _mark_active()
 
     if len(commands) == 1:
         return {"mode": "now", "command": commands[0], "chat_id": None,
@@ -137,25 +103,19 @@ def start(text, base_dir, account_id, reason="次數還沒用完，先確認陣�
 
 
 def handle_phase_transition(text, delay_seconds, base_dir, account_id):
-    """world_boss_strategy.py 偵測到 phase_transition 事件、且這支模組
-    正在進行中(is_active())時呼叫。代表王在連續討伐途中換相，被硬直卡住
-    ——次數還沒用完，只是這一輪指令提前中止，不是「次數用完」，不能誤判
-    去啟動爐火重置。
+    """world_boss_strategy.py 偵測到 phase_transition 事件時呼叫。代表王
+    在連續討伐途中換相，被硬直卡住——次數還沒用完，只是這一輪指令提前
+    中止，不是「次數用完」，不能誤判去啟動爐火重置。
 
-    2026-09-06 修正：換相後弱點屬性、甚至王的類型都可能整個換掉(熊反映
-    的真實案例：木→火、防禦型→持久型)，原本這裡只是單純重送「連續
-    討伐」，沒有重新判斷陣容，換完相打的可能是完全不合弱點的屬性。
-    WeaknessParser.parse() 本來就認得換相公告的格式(「五行 X→Y　類型
-    A→B　新弱點:Z」)，直接沿用，跟 start() 用同一套 _decide_switch_
-    commands() 判斷，不用另外寫。
+    換相後弱點屬性、甚至王的類型都可能整個換掉(熊反映的真實案例：
+    木→火、防禦型→持久型)，重新判斷陣容後排程恢復連續討伐，不是單純
+    重送「連續討伐」。WeaknessParser.parse() 本來就認得換相公告的格式
+    (「五行 X→Y　類型 A→B　新弱點:Z」)，直接沿用。
 
     硬直 delay_seconds 秒是遊戲機制本身的限制，這段時間本來就打不到王；
     換手動作排在硬直之後、攻擊之前，一次用 scheduler.py 的
     steps+interval 機制排完(硬直→換手→換手→攻擊，彼此間隔
-    SWITCH_DELAY_SECONDS)，不會太快連續送出指令(熊 2026-09-06 反映：
-    換相/護衛清完後太快換手+攻擊，容易撞到伺服器本身的指令冷卻)。"""
-    _mark_active()
-
+    SWITCH_DELAY_SECONDS)，不會太快連續送出指令。"""
     weakness = WeaknessParser.parse(text)
     if weakness is None:
         # 抓不到新弱點，沒辦法判斷陣容，只能照舊直接重送連續討伐——
@@ -169,7 +129,7 @@ def handle_phase_transition(text, delay_seconds, base_dir, account_id):
 
     roster = load_roster(base_dir, account_id)
     rules = load_json(RULES_PATH)
-    commands = _decide_switch_commands(roster, weakness, rules)
+    commands = TopSelector.decide_switch_commands(roster, weakness, rules)
     commands.append("連續討伐")
 
     switch_note = f"先換手（{' → '.join(commands[:-1])}）再" if len(commands) > 1 else ""
@@ -183,9 +143,8 @@ def handle_phase_transition(text, delay_seconds, base_dir, account_id):
 
 def is_daily_count_exhausted(structured: dict):
     """純函式：從戰報/連續討伐回覆的解析結果判斷「今天次數是否用完」。
-    抽出來是因為這個判斷不只 furnace_loop 用得到——之後 full_clear
-    模式(全程連續，次數用完一樣要靠爐火重置繼續打)也要問同一個問題，
-    不要各自重複讀 daily_count/daily_limit 兩個欄位、各自寫一次比較。
+    抽出來是因為這個判斷不只 furnace_loop 用得到——full_clear 模式也要
+    問同一個問題，不要各自重複讀 daily_count/daily_limit 兩個欄位。
 
     回傳 True/False/None：抓不到次數資訊(這則回覆本來就沒有次數欄位)
     時回傳 None，呼叫端要自己決定「不知道」時該怎麼辦，不要當成 False。
@@ -198,39 +157,40 @@ def is_daily_count_exhausted(structured: dict):
 
 
 def decide(ctx):
-    if not is_active():
-        return None
     # 「連續討伐」的回覆是 world_boss_continuous_report(逐刀彙總格式)，
-    # 不是單刀的 world_boss_battle_report——2026-09-05 用實際樣本發現
-    # 兩者完全是不同的訊息格式，之前只認單刀那個 shape，導致「連續討伐」
-    # 送出後這支模組完全收不到反應，卡在爐火流程進不去。兩個 shape 都有
-    # daily_count/daily_limit 欄位，判斷邏輯可以共用，不用分別處理。
+    # 不是單刀的 world_boss_battle_report——兩者完全是不同的訊息格式，
+    # 但都有 daily_count/daily_limit 欄位，判斷邏輯可以共用。
     if ctx.shape not in ("world_boss_continuous_report", "world_boss_battle_report"):
         return None
 
     exhausted = is_daily_count_exhausted(ctx.structured)
-    if exhausted is None:
-        return None  # 這則戰報沒有次數資訊，不是我們能判斷的訊號，安靜放行
+    if exhausted is None or not exhausted:
+        return None  # 還沒用完，或這則回覆本來就沒有次數資訊，不用做什麼
+
+    boss_name = ctx.structured.get("boss_name")
+
+    if boss_name is None:
+        # 只有手動連續討伐剛好把王打死才會發生這種精簡格式(熊 2026-09-06
+        # 說明：開始一定看過公告知道王名，只有討伐後沒有下一個動作的
+        # 機會才會漏接)。不知道是哪隻王，直接查詢「世界王」——查詢回覆
+        # 自然帶出王名，交給 decide_action_from_status_query() 接手判斷，
+        # 不用自己猜。
+        return actions.send_now(
+            "世界王", chat_id=None,
+            reason="連續討伐次數用完但抓不到王名，查詢確認狀態",
+        )
+
+    world_boss_progress.mark_count_exhausted(ctx.base_dir, ctx.account_id, boss_name)
+    mode = world_boss_progress.get_mode(ctx.base_dir, ctx.account_id, boss_name)
+
+    if mode != world_boss_mode.FURNACE_LOOP:
+        return None  # 不是我負責的王(touch 或 full_clear，交給對應模組/流程)
+
+    if world_boss_progress.is_furnace_completed(ctx.base_dir, ctx.account_id, boss_name):
+        return None  # 已經重置過一次了，furnace_loop 定義上不追加，不再觸發
 
     daily_count = ctx.structured.get("daily_count")
     daily_limit = ctx.structured.get("daily_limit")
-
-    if not exhausted:
-        _mark_active()  # 還有進度，延長逾時，等後續戰報
-        return actions.none(log=f"[爐火模式] 今日 {daily_count}/{daily_limit} 次，還沒用完，繼續等後續戰報")
-
-    _clear()
-
-    # 2026-09-06 熊確認的規則：次數用完時，是不是要「自動」開始觀火，
-    # 由 /auto furnace 這個獨立開關決定；開關本身不影響爐火反應式的
-    # 那半段(furnace_cycle_strategy.decide())——開關關著時，只是不自動
-    # 送「觀火」，熊自己手動送出的話，furnace_cycle_strategy 一樣會
-    # 接手把整個流程跑完，不會因為開關關著就不理會手動操作。
-    if not ctx.is_enabled(auto_toggle.FURNACE_AUTO):
-        return actions.none(
-            log=f"[爐火模式] 今日 {daily_count}/{daily_limit} 次已用完，"
-                "但爐火自動化未開啟（/auto furnace on 可開啟），已結束本輪世界王流程，"
-                "需要手動觀火——手動送出後，爐火流程照樣會自動接手跑完",
-        )
-
-    return furnace_cycle_strategy.start(reason=f"今日 {daily_count}/{daily_limit} 次已用完，開始爐火重置")
+    return furnace_cycle_strategy.start(
+        reason=f"「{boss_name}」今日 {daily_count}/{daily_limit} 次已用完，爐火模式自動爐火重置",
+    )
