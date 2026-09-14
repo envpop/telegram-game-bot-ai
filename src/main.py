@@ -7,7 +7,6 @@ import executor
 import scheduler
 import data_store
 import world_boss_mode
-from triggers import furnace_cycle_strategy
 from triggers import world_boss_strategy
 from triggers import main_tower_battle_strategy
 from triggers import guard_clear_strategy
@@ -29,9 +28,7 @@ from strategies.contract_tracking_strategy import ContractTrackingStrategy
 from strategies.inventory_display_strategy import InventoryDisplayStrategy
 from strategies.battle_status_line_strategy import BattleStatusLineStrategy
 from message_buffer import MessageBuffer
-
-import os
-os.system("title MOMOBearBot - main")
+from terminal_title import RUNNING_TITLE, restore_default_title, set_title
 
 router = MessageRouter()
 
@@ -195,57 +192,73 @@ async def run():
     print()
 
     print("正在連線 Telegram...")
+    terminal_task = None
     try:
         await client.start()
     except (ConnectionError, OSError) as e:
         print(f"[連線失敗] {e}，請確認網路狀態後重新啟動程式")
         return
-    print("✅ 連線成功，開始監聽中（Ctrl+C 停止）")
+    try:
+        set_title(RUNNING_TITLE)
+        print("✅ 連線成功，開始監聽中（Ctrl+C 停止）")
 
-    global ACCOUNT_ID
-    me = await client.get_me()
-    ACCOUNT_ID = me.id
-    print(f"目前登入帳號 ID：{ACCOUNT_ID} ")
-    print()
+        global ACCOUNT_ID
+        me = await client.get_me()
+        ACCOUNT_ID = me.id
+        print(f"目前登入帳號 ID：{ACCOUNT_ID} ")
+        print()
 
-    # 這裡才知道 ACCOUNT_ID，才能建立需要存檔到 data/{帳號ID}/ 的 strategy。
-    # 之後新增其他被動記錄型 strategy，只要加進這個清單，這裡跟 on_record
-    # 都不用再改。
-    global STRATEGY_PIPELINE
-    account_dir = data_store.account_dir(BASE_DIR, ACCOUNT_ID)
-    common_dir = data_store.common_dir(BASE_DIR)
-    market_tracking = MarketTrackingStrategy(
-        account_data_dir=account_dir,
-        common_data_dir=common_dir,
-        enable_pulse=False,
-    )
-    contract_tracking = ContractTrackingStrategy(common_data_dir=common_dir)
-    query_advisor = QueryAdvisorStrategy(
-        account_data_dir=account_dir,
-        common_data_dir=common_dir,
-    )
-    inventory_display = InventoryDisplayStrategy(
-        base_dir=BASE_DIR,
-        account_id_getter=_get_account_id,   # main.py 已經有這個函式，直接沿用
-    )
-    battle_status_line = BattleStatusLineStrategy(
-        account_data_dir=account_dir,
-    )
-    STRATEGY_PIPELINE = StrategyPipeline(
-        [market_tracking, contract_tracking, query_advisor, inventory_display, battle_status_line]
-    )
-    global CHART_CORRELATION
-    CHART_CORRELATION = ChartCorrelationStrategy(
-        common_data_dir=common_dir,
-        media_dir=common_dir / "chart_media",
-    )
-    asyncio.create_task(terminal_input_loop())
-    await client.run_until_disconnected()
+        # 這裡才知道 ACCOUNT_ID，才能建立需要存檔到 data/{帳號ID}/ 的 strategy。
+        # 之後新增其他被動記錄型 strategy，只要加進這個清單，這裡跟 on_record
+        # 都不用再改。
+        global STRATEGY_PIPELINE
+        account_dir = data_store.account_dir(BASE_DIR, ACCOUNT_ID)
+        common_dir = data_store.common_dir(BASE_DIR)
+        market_tracking = MarketTrackingStrategy(
+            account_data_dir=account_dir,
+            common_data_dir=common_dir,
+            enable_pulse=False,
+        )
+        contract_tracking = ContractTrackingStrategy(common_data_dir=common_dir)
+        query_advisor = QueryAdvisorStrategy(
+            account_data_dir=account_dir,
+            common_data_dir=common_dir,
+        )
+        inventory_display = InventoryDisplayStrategy(
+            base_dir=BASE_DIR,
+            account_id_getter=_get_account_id,   # main.py 已經有這個函式，直接沿用
+        )
+        battle_status_line = BattleStatusLineStrategy(
+            account_data_dir=account_dir,
+        )
+        STRATEGY_PIPELINE = StrategyPipeline(
+            [market_tracking, contract_tracking, query_advisor, inventory_display, battle_status_line]
+        )
+        global CHART_CORRELATION
+        CHART_CORRELATION = ChartCorrelationStrategy(
+            common_data_dir=common_dir,
+            media_dir=common_dir / "chart_media",
+        )
+        terminal_task = asyncio.create_task(terminal_input_loop())
+        await client.run_until_disconnected()
+        print("[連線已關閉] 已停止監聽。")
+    finally:
+        if terminal_task is not None:
+            terminal_task.cancel()
+            try:
+                await terminal_task
+            except asyncio.CancelledError:
+                pass
+        restore_default_title()
 
 
 if __name__ == "__main__":
-    with client:
-        try:
-            client.loop.run_until_complete(run())
-        except KeyboardInterrupt:
-            print("\n手動停止，程式結束。")
+    restore_default_title()
+    try:
+        with client:
+            try:
+                client.loop.run_until_complete(run())
+            except KeyboardInterrupt:
+                print("\n手動停止，程式結束。")
+    finally:
+        restore_default_title()

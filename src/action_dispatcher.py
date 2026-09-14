@@ -1,5 +1,5 @@
 """action_dispatcher.py —— 根據 parser 結果協調各自動化處理器。"""
-
+import asyncio
 import auto_toggle
 import profile_sync_strategy
 from reaction_rules import ReactionRuleEngine
@@ -33,12 +33,19 @@ class ActionDispatcher:
         self.announcement_strategies = announcement_strategies or []
         self.server_triggers = server_triggers or []
         self.rule_engine = ReactionRuleEngine(rules_file)
-
+        # Telethon callback 可以並行執行。將「判斷狀態 → 執行動作」序列化，
+        # 避免網路恢復時一批 update 同時讀到相同狀態而各自觸發動作。
+        self._dispatch_lock = asyncio.Lock()
+        
     @property
     def account_id(self):
         return self.account_id_getter()
 
     async def dispatch(self, record, parsed):
+        async with self._dispatch_lock:
+            await self._dispatch_locked(record, parsed)
+
+    async def _dispatch_locked(self, record, parsed):
         if parsed is None:
             return
 

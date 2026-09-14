@@ -8,7 +8,7 @@ from pathlib import Path
 from telethon import events
 
 from telegram_client import client, BASE_DIR, is_self_sent
-
+from delivery_guard import DeliveryGuard
 # ============================================================
 # 基本設定
 # ============================================================
@@ -23,6 +23,9 @@ MONITORED_CHATS = {
 }
 
 DOWNLOAD_TIMEOUT_SECONDS = 30
+# 在進入下載、寫檔與 callback 前就去重。這是斷線重連的第一道防線；
+# ActionDispatcher 仍保留自己的防線，保護未經 monitor 進入的呼叫端。
+DELIVERY_GUARD = DeliveryGuard()
 
 # 圖片下載開關：預設關閉。已確認遊戲內的圖表訊息(如契約行情走勢圖)
 # 內容跟同組的文字訊息重複,目前沒有圖片辨識需求,關閉可省下大量硬碟空間。
@@ -262,7 +265,21 @@ async def process_message(message, event_type):
     text = message.text or ""
     buttons = extract_buttons(message)
     media_info = extract_media_info(message)
-
+    # 👇 新增下面這段去重邏輯：
+    # event_type 不納入 fingerprint：同一個內容被 new/edited 重複派送時，
+    # 也不應再處理；文字、按鈕或媒體有任何改變時則會正常放行。
+    fingerprint = (
+        text,
+        tuple(
+            (button.get("row"), button.get("column"), button.get("text"),
+             button.get("type"), button.get("data"), button.get("url"))
+            for button in buttons
+        ),
+        repr(media_info),
+    )
+    if DELIVERY_GUARD.is_duplicate((chat_id, message.id), fingerprint):
+        print(f"[monitor] ⏭️ 偵測到重複 Telegram update，略過：chat={chat_id} msg={message.id}")
+        return
     image_path = None
     try:
         image_path = await asyncio.wait_for(
