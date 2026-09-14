@@ -25,6 +25,9 @@ credentials.json
 # Notepad++ 備份
 *.bak
 
+#測試用環境
+test/
+
 # Ignore everything under data/ & media
 data/*
 
