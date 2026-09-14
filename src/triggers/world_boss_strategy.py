@@ -111,19 +111,6 @@ def _extract_name(text, pattern):
 
 _NO_ACTION = {"mode": None, "delay_seconds": None, "command": None, "chat_id": None, "reason": None}
 
-# 這支 bot 一次只服務一個帳號——爐火重置完成的無參數回呼(見
-# _query_after_furnace_reset())沒辦法知道要查詢哪個帳號，只能記住
-# 「最後一次是誰在互動」。這裡刻意在每一次世界王相關判斷(不只是流程
-# 起點)都更新，盡量降低過時的風險，跟之前討論過的「記住流程進行中」
-# 性質不同——這只是「目前是哪個帳號在跑」，幾乎不會變的事實，不是會
-# 過期/導致誤判的「決策狀態」。
-_last_known_context = None  # {"base_dir","account_id"} 或 None
-
-
-def _remember_context(base_dir, account_id):
-    global _last_known_context
-    _last_known_context = {"base_dir": base_dir, "account_id": account_id}
-
 
 # 王出現時剛好護衛也在，兩邊都會換手/搶陣容（熊 2026-09-05／09-06 反映）。
 # 判斷準則是「這隻王身上有沒有護衛」+「清護衛的自動開關有沒有開」——
@@ -182,27 +169,12 @@ async def resume_pending_boss():
 
 guard_clear_strategy.on_session_end(resume_pending_boss)
 
-
-async def _query_after_furnace_reset():
-    """furnace_cycle_strategy 的爐火流程結束時(不管是正常炸爆還是被
-    搶先重置)透過 on_session_end() 回呼觸發。不需要知道是 furnace_loop
-    還是 full_clear 觸發的這次重置，也不需要記得是哪一隻王——直接送
-    一次「世界王」查詢，回覆會自然帶出王名跟最新次數，交給
-    decide_action_from_status_query() 判斷「次數補回來了，該不該恢復
-    攻擊／該標記完成」（熊 2026-09-06 確認：出問題時僅做一次查詢，
-    還有問題就放過，不重試）。"""
-    if _last_known_context is None:
-        return
-    base_dir = _last_known_context["base_dir"]
-    account_id = _last_known_context["account_id"]
-    catalog = load_catalog(base_dir)
-    chat_id = catalog["status_query"]["chat_id"]
-    await actions.execute(actions.send_now(
-        "世界王", chat_id=chat_id, reason="爐火流程結束，查詢確認是否需要恢復攻擊",
-    ))
-
-
-furnace_cycle_strategy.on_session_end(_query_after_furnace_reset)
+# 2026-09-13 移除：原本這裡有一個 _query_after_furnace_reset()，爐火
+# 完成時送一次「世界王」查詢確認後續。熊反映可以省掉這個往返，改成
+# furnace_loop_strategy/full_clear_strategy 各自記住「最後一次是哪隻王
+# 觸發爐火」，完成時直接處理(furnace_loop 直接標記完成；full_clear
+# 直接重判陣容+恢復連續討伐)，不用查詢——見那兩支檔案各自的
+# _on_furnace_complete()。
 
 
 def _dispatch_for_mode(text, name, mode, mode_reason, base_dir, account_id, context_label="剛出現"):
@@ -252,8 +224,6 @@ def decide_action(text, catalog, base_dir, account_id):
     event = classify_message(text, catalog)
     if event is None:
         return _NO_ACTION
-
-    _remember_context(base_dir, account_id)
 
     event_id = event["event_id"]
     # 討伐指令固定送去摸熊神社(bot 私訊)，不是送回偵測到訊息的公告頻道——
@@ -347,8 +317,6 @@ def decide_action_from_status_query(text, catalog, base_dir, account_id):
         print(f"[世界王] ⚠️ 偵測到查詢回覆，但抓不到王的名字，跳過判斷：{text[:40]}...")
         return _NO_ACTION
 
-    _remember_context(base_dir, account_id)
-
     if query["alive_check_pattern"] in text:
         return _NO_ACTION  # 王已經死了，補不了
 
@@ -370,16 +338,22 @@ def decide_action_from_status_query(text, catalog, base_dir, account_id):
         mode = world_boss_progress.get_mode(base_dir, account_id, name)
         if mode == world_boss_mode.FULL_CLEAR:
             print(f"[世界王] 查詢「{name}」次數已用完，全程模式自動觸發爐火重置")
+            full_clear_strategy.remember_boss(base_dir, account_id, name, text)
             return furnace_cycle_strategy.start(reason=f"查詢確認「{name}」次數已用完，全程模式自動爐火重置")
         if mode == world_boss_mode.FURNACE_LOOP and not world_boss_progress.is_furnace_completed(base_dir, account_id, name):
             print(f"[世界王] 查詢「{name}」次數已用完，爐火模式自動觸發爐火重置")
+            furnace_loop_strategy.remember_boss(base_dir, account_id, name)
             return furnace_cycle_strategy.start(reason=f"查詢確認「{name}」次數已用完，爐火模式自動爐火重置")
         return _NO_ACTION  # touch，或 furnace_loop 已經重置過一次了，不用再動作
 
     if was_exhausted:
-        # 之前記錄是用完的，現在查詢卻顯示沒用完 —— 代表爐火重置剛完成，
-        # 次數補回來了。清掉標記，才能正確偵測「下一輪」次數用完
-        # (full_clear 需要重複偵測很多輪)。
+        # 之前記錄是用完的，現在查詢卻顯示沒用完 —— 代表爐火重置已經
+        # 完成了。正常情況下 furnace_loop_strategy/full_clear_strategy
+        # 各自的 _on_furnace_complete() 回呼應該已經直接處理過這件事了
+        # (見 2026-09-13 的修正說明)；這裡留著當作備援保險——萬一那個
+        # 回呼因為某些原因沒接住(例如記憶體快取剛好被清空)，這裡剛好
+        # 用查詢的方式重新確認一次，兩邊都清 count_exhausted 標記，
+        # 不會因為順序不同而重複觸發。
         world_boss_progress.clear_count_exhausted(base_dir, account_id, name)
         mode = world_boss_progress.get_mode(base_dir, account_id, name)
         if mode == world_boss_mode.FULL_CLEAR:

@@ -68,6 +68,39 @@ SYSTEM_KEY = auto_toggle.WORLD_BOSS
 # 換手/連續討伐這組序列的間隔，熊確認的實測值。
 SWITCH_DELAY_SECONDS = 2.0
 
+# 見檔尾「爐火完成後的直接接手」說明：只記「最後一次是哪隻王觸發爐火
+# 重置」，不是「流程進行中」的旗標——爐火真的完成時，靠這個知道該把
+# 哪隻王標記成 furnace_completed，省掉多送一次「世界王」查詢的往返。
+# 記錯/記到舊資料的代價很小(頂多錯過一次標記，下次戰報還是會再判斷一
+# 次)，跟之前拿掉的 session 狀態(記錯會導致做出錯誤動作)性質不同。
+_last_boss_context = None  # {"base_dir","account_id","name"} 或 None
+
+
+def remember_boss(base_dir, account_id, name):
+    """觸發爐火重置前呼叫，讓爐火完成時知道要把哪隻王標記完成。
+    world_boss_strategy.decide_action_from_status_query() 查詢路徑觸發
+    爐火時也要呼叫這個，兩個觸發入口共用同一份記憶。"""
+    global _last_boss_context
+    _last_boss_context = {"base_dir": base_dir, "account_id": account_id, "name": name}
+
+
+async def _on_furnace_complete():
+    """furnace_cycle_strategy 的爐火流程結束時觸發(不管正常炸爆還是被
+    搶先重置)。furnace_loop 不用像 full_clear 那樣恢復攻擊，只需要把
+    「這隻王已經重置過一次了」記下來，不用查詢遊戲確認——這個標記本身
+    就是本地的持久記錄，不需要跟遊戲對答案。"""
+    if _last_boss_context is None:
+        return
+    ctx = _last_boss_context
+    mode = world_boss_progress.get_mode(ctx["base_dir"], ctx["account_id"], ctx["name"])
+    if mode != world_boss_mode.FURNACE_LOOP:
+        return  # 不是這次爐火重置的觸發者(可能是 full_clear 觸發的)，不是我的事
+    world_boss_progress.mark_furnace_completed(ctx["base_dir"], ctx["account_id"], ctx["name"])
+    print(f"[爐火模式] 「{ctx['name']}」爐火重置完成，到此為止，不繼續打")
+
+
+furnace_cycle_strategy.on_session_end(_on_furnace_complete)
+
 
 def start(text, base_dir, account_id, reason="次數還沒用完，先確認陣容再連續討伐"):
     """world_boss_strategy.py 的 decide_action()(公告路徑)判斷
@@ -183,12 +216,32 @@ def decide(ctx):
     world_boss_progress.mark_count_exhausted(ctx.base_dir, ctx.account_id, boss_name)
     mode = world_boss_progress.get_mode(ctx.base_dir, ctx.account_id, boss_name)
 
+    if mode is None:
+        # 查不到這隻王的紀錄——最可能是「出現/查詢/戰報」三種訊息格式
+        # 抓出來的王名剛好對不上(多一個符號、全形半形不同之類)。如果
+        # /wbmode 是手動指定(不是 auto)，不需要靠這隻王的紀錄也能知道
+        # 該用哪個模式，直接信任目前的開關設定，不要因為名字對不上就
+        # 整個放棄；如果是 auto，沒有階數/懸賞資訊真的無法判斷，才送
+        # 查詢讓 decide_action_from_status_query() 用它自己抓到的名字
+        # 重新確認一次。
+        override = world_boss_mode.get_override(ctx.base_dir, ctx.account_id)
+        if override == world_boss_mode.FURNACE_LOOP:
+            mode = world_boss_mode.FURNACE_LOOP
+            print(f"[爐火模式] 「{boss_name}」查不到紀錄(可能是王名對不上)，"
+                  f"但 /wbmode 手動指定 furnace_loop，直接信任開關設定")
+        else:
+            return actions.send_now(
+                "世界王", chat_id=None,
+                reason=f"「{boss_name}」次數用完但查不到模式紀錄，查詢確認狀態",
+            )
+
     if mode != world_boss_mode.FURNACE_LOOP:
         return None  # 不是我負責的王(touch 或 full_clear，交給對應模組/流程)
 
     if world_boss_progress.is_furnace_completed(ctx.base_dir, ctx.account_id, boss_name):
         return None  # 已經重置過一次了，furnace_loop 定義上不追加，不再觸發
 
+    remember_boss(ctx.base_dir, ctx.account_id, boss_name)
     daily_count = ctx.structured.get("daily_count")
     daily_limit = ctx.structured.get("daily_limit")
     return furnace_cycle_strategy.start(
