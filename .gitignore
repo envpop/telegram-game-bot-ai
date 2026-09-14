@@ -26,7 +26,7 @@ credentials.json
 *.bak
 
 #測試用環境
-test/
+tests/
 
 # Ignore everything under data/ & media
 data/*
