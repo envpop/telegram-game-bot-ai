@@ -67,6 +67,7 @@ from triggers import actions
 from triggers import furnace_cycle_strategy
 from triggers import furnace_loop_strategy
 from triggers import full_clear_strategy
+from triggers import max_attack_strategy
 from triggers import guard_clear_strategy
 
 # 給 action_dispatcher.py 的公告策略迴圈用：迴圈用 getattr(strategy,
@@ -186,6 +187,9 @@ def _dispatch_for_mode(text, name, mode, mode_reason, base_dir, account_id, cont
     chat_id = catalog["status_query"]["chat_id"]
     command = catalog["attack_command"]
 
+    if mode == world_boss_mode.MAX_ATTACK:
+        print(f"[世界王] 「{name}」判定為 max_attack（{mode_reason}），交給打到次數用完模式處理")
+        return max_attack_strategy.start(text, base_dir, account_id)
     if mode == world_boss_mode.FURNACE_LOOP:
         print(f"[世界王] 「{name}」判定為 furnace_loop（{mode_reason}），交給爐火模式處理")
         return furnace_loop_strategy.start(text, base_dir, account_id)
@@ -277,6 +281,9 @@ def decide_action(text, catalog, base_dir, account_id):
             world_boss_progress.mark_mode(base_dir, account_id, name, mode)
             print(f"[世界王] 「{name}」換相時才第一次判定模式：{mode}（{mode_reason}）")
 
+        if mode == world_boss_mode.MAX_ATTACK:
+            print(f"[世界王] 「{name}」換相，打到次數用完模式，{delay} 秒後繼續連續討伐")
+            return max_attack_strategy.handle_phase_transition(text, delay, base_dir, account_id)
         if mode == world_boss_mode.FURNACE_LOOP:
             print(f"[世界王] 「{name}」換相，爐火模式，{delay} 秒後繼續連續討伐")
             return furnace_loop_strategy.handle_phase_transition(text, delay, base_dir, account_id)

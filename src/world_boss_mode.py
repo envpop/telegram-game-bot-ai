@@ -10,10 +10,16 @@ world_boss_mode.py —— 世界王「投入程度」判斷與手動覆蓋
 這裡是「選哪個模式」，值域不只兩個，所以另外開一個檔案，不硬塞進
 auto_toggle.py 裡。
 
-=== 目前的三個模式(2026-09-03 確認) ===
+=== 目前的模式(2026-09-13 新增 max_attack) ===
     touch         —— 摸王：單次討伐，拿參加獎勵為主。既有行為，跟現有
                      world_boss_strategy.py 的「一個王的生命週期內至少
                      打一次」對齊，這裡只負責「選到這個模式」。
+    max_attack    —— 打到次數用完：換手＋連續討伐，把這隻王當下的次數
+                     打完就結束，完全不碰爐火(不觸發觀火/投爐)。比
+                     furnace_loop 更單純——沒有「次數用完後還要做什麼」
+                     這件事，純粹只是「這隻王出現時，盡量把手上的次數
+                     打光」。目前只能手動指定(/wbmode max_attack)，
+                     沒有掛進 2~4 階/懸賞那組自動條件判斷。
     furnace_loop  —— 爐火：獨立、有限度的中等投入。打完一輪次數 → 用爐火
                      (觀火/投爐)重置次數 → 再打一輪 → 就停，不追到王死。
                      是獨立模式，不是 full_clear 的中繼步驟。
@@ -21,9 +27,9 @@ auto_toggle.py 裡。
                      會用爐火重置繼續打，但這只是「繼續打到死」的一部分，
                      不是額外選了 furnace_loop。目標是拿最高傷害貢獻。
 
-三個模式目前都只是「選到了這個模式」的空殼，實際打法(什麼時候觀火/投爐、
-連續出手怎麼排、要不要換手)還沒設計定案，等對應的 Strategy 邏輯確定後
-再接手——本模組不做任何戰鬥判斷，只回答「現在該用哪個模式」。
+模式的實際打法(什麼時候觀火/投爐、連續出手怎麼排、要不要換手)不在這支
+模組裡——本模組不做任何戰鬥判斷，只回答「現在該用哪個模式」，等對應的
+Strategy handler(觸發模組)去實作。
 
 新增模式時：
     1. MODES 加一個字串常數
@@ -68,11 +74,12 @@ import json
 from data_store import account_dir
 
 TOUCH = "touch"
+MAX_ATTACK = "max_attack"
 FURNACE_LOOP = "furnace_loop"
 FULL_CLEAR = "full_clear"
 AUTO = "auto"  # 手動覆蓋的特殊值，代表「不要覆蓋，照條件判斷」
 
-MODES = [TOUCH, FURNACE_LOOP, FULL_CLEAR]
+MODES = [TOUCH, MAX_ATTACK, FURNACE_LOOP, FULL_CLEAR]
 
 _STATE_FILENAME = "world_boss_mode.json"
 
@@ -126,12 +133,14 @@ def determine_mode(base_dir, account_id, stage, has_ticket_bounty: bool):
 # 統一介面：async def handle_command(text, base_dir, account_id) -> None
 # 跟 auto_toggle.py 的 /auto 指令同一套介面，main.py 用登記表統一呼叫。
 
-_LABELS = {AUTO: "自動判斷", TOUCH: "摸王(單次)", FURNACE_LOOP: "爐火(中等投入)", FULL_CLEAR: "全程(最高傷害)"}
+_LABELS = {AUTO: "自動判斷", TOUCH: "摸王(單次)", MAX_ATTACK: "打到次數用完(不進爐火)",
+           FURNACE_LOOP: "爐火(中等投入)", FULL_CLEAR: "全程(最高傷害)"}
 
 _USAGE = ("[錯誤] /wbmode 用法：\n"
           "  /wbmode              查看目前的手動覆蓋狀態\n"
           "  /wbmode auto         取消覆蓋，改回條件自動判斷\n"
           "  /wbmode touch        強制切換成摸王(單次)\n"
+          "  /wbmode max_attack   強制切換成打到次數用完(不進爐火)\n"
           "  /wbmode furnace_loop 強制切換成爐火(中等投入)\n"
           "  /wbmode full_clear   強制切換成全程(最高傷害)")
 
