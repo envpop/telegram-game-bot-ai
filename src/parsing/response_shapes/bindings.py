@@ -27,7 +27,9 @@ def _format_talent_tail(b: dict) -> str:
     parts = []
     element_stage = b.get("element_stage")
     if element_stage:
-        parts.append(f"五行{element_stage['element']}{element_stage['stage']}階")
+        # 屬性名字已經在 _format_binding_line() 的 headline 顯示過了，
+        # 這裡只補階級數字，避免「火屬性...火3階」重複講兩次屬性名。
+        parts.append(f"{element_stage['stage']}階")
 
     for t in b.get("talents") or []:
         parts.append(f"{t['name']}{t['level']}")
@@ -42,15 +44,31 @@ def _format_talent_tail(b: dict) -> str:
 
 
 def _format_binding_line(b: dict) -> str:
+    """單行精簡版：編號／名字／五行屬性／類型／戰力放最前面（熊選陀螺時
+    優先看的四項），用「｜」跟後面的次要資訊（強化值、綁定標籤、天賦、
+    共鳴）明確隔開，一眼先掃到重點，不用在一長串字裡找。熟練度／可兌換
+    次數不顯示（熊確認選陀螺不需要看這個，省下來讓行更短）。
+
+    五行屬性只有這則「綁定一覽」訊息本身能查到 element_stage 這個來源
+    （已點天賦才有）；tops.json 合併後才有的 annotate_special_source()
+    來源（旋神/旋王/UR精選/鑄造對照表）這裡查不到，因為這支 shape 刻意
+    不吃 base_dir/account_id（見檔案開頭 docstring）。還沒點天賦的陀螺
+    這裡一律顯示「屬性未知」，不代表牠真的沒有屬性，只是這個顯示層看不到
+    另一個來源。
+    """
     marker = "⚔️" if b.get("is_active") else ""
-    enh = f" +{b['enhancement']}" if b.get("enhancement") else ""
-    bind_tag = f"　{b['bind_type']}{b.get('bind_tier') or ''}" if b.get("bind_type") else ""
-    header = f"#{b['index']} {marker}{b['name']}{enh}{bind_tag}｜{b['build']}・戰力{b['power']}"
+    element_stage = b.get("element_stage")
+    element = f"{element_stage['element']}屬性" if element_stage else "屬性未知"
 
-    mastery = b.get("mastery") or {}
-    mastery_str = f"熟練{mastery.get('current', '?')}/{mastery.get('max', '?')}(可兌{b.get('exchange_available', 0)}次)"
+    headline = f"#{b['index']} {marker}{b['name']}｜{element}・{b['build']}・戰力{b['power']}"
 
-    return f"{header}　{mastery_str}　{_format_talent_tail(b)}"
+    enh = f"+{b['enhancement']}" if b.get("enhancement") else None
+    bind_tag = f"{b['bind_type']}{b.get('bind_tier') or ''}" if b.get("bind_type") else None
+    talent_str = _format_talent_tail(b)
+
+    secondary = "・".join(p for p in (enh, bind_tag, talent_str) if p)
+
+    return f"{headline}　{secondary}"
 
 
 def format_for_display(parsed: dict) -> str:

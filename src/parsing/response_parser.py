@@ -53,6 +53,9 @@ from .response_shapes import furnace_watch_blocked
 from .response_shapes import furnace_overview
 from .response_shapes import furnace_feed_blocked
 from .response_shapes import world_boss_continuous_report
+from .response_shapes import satellite_training_round
+from .response_shapes import backpack
+from .response_shapes import item_description
 
 _ROUTE_MAP = {
     ServerSubtype.RESPONSE: "server_response_flow",
@@ -79,6 +82,9 @@ _KNOWN_SHAPES = [
     main_tower_battle_prompt,
     guard_status,
     satellite_catalog,
+    satellite_training_round,
+    backpack,
+    item_description,
     my_tops,
     bindings,
     guard_status,
@@ -116,12 +122,20 @@ class ServerResponseParser:
 
         for shape_module in _KNOWN_SHAPES:
             if shape_module.signature(raw_text):
-                structured = shape_module.parse(raw_text)
+                if getattr(shape_module, "NEEDS_BUTTONS", False):
+                    # 少數 shape（例如 satellite_training_round）的顯示需要按鈕
+                    # 本身的座標／文字，不是只靠訊息文字就能組出來，用這個旗標
+                    # 讓 shape 自己聲明需要，其餘 shape 維持原本只吃 text 的介面，
+                    # 不用全部跟著改參數。
+                    structured = shape_module.parse(raw_text, buttons=record.get("buttons"))
+                else:
+                    structured = shape_module.parse(raw_text)
                 result.update({
                     "parsed": True,
                     "shape": shape_module.__name__.rsplit(".", 1)[-1],
                     "structured": structured,
                     "display_text": shape_module.format_for_display(structured),
+                    "buttons_rendered_by_shape": getattr(shape_module, "NEEDS_BUTTONS", False),
                 })
                 break
 

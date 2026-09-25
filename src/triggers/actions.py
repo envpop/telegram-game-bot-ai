@@ -96,7 +96,7 @@ async def _run_click_button(payload):
 
 async def _run_schedule(payload):
     job = scheduler.ScheduledJob(
-        steps=payload["steps"], delay_seconds=payload["delay_seconds"],
+        segments=[("repeat", payload["steps"])], delay_seconds=payload["delay_seconds"],
         chat_id=payload.get("chat_id"), reason=payload.get("reason"),
         repeat=payload.get("repeat", 1), interval=payload.get("interval", (0.0, 0.0)),
     )

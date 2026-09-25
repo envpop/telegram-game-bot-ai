@@ -63,6 +63,8 @@ _SHAPE_TOP_RECORD = "top_record"
 _SHAPE_SUB_TOP_CONFIRMATION = "sub_top_confirmation"
 _SHAPE_SUB_TOP_STATUS = "sub_top_status"
 _SHAPE_FORGE_RESULT = "forge_result"
+_SHAPE_BACKPACK = "backpack"
+_SHAPE_ITEM_DESCRIPTION = "item_description"
 
 
 def _no_match():
@@ -115,28 +117,11 @@ def handle_server_message(parsed, base_dir, account_id):
     if shape == _SHAPE_FORGE_RESULT:
         return _handle_forge_result(structured, base_dir, account_id)
 
-    text = parsed.get("raw_text") or ""
+    if shape == _SHAPE_BACKPACK:
+        return _handle_backpack(structured, base_dir, account_id)
 
-    if backpack_watcher.is_backpack_message(text):
-        result = backpack_watcher.parse_backpack(text)
-        backpack_watcher.save_inventory_snapshot(base_dir, account_id, result)
-
-        new_items = backpack_watcher.find_new_items(base_dir, result)
-        if not new_items:
-            return _handled("[背包] 已更新")
-
-        backpack_watcher.mark_items_as_queried(base_dir, new_items)
-        commands = [f"道具說明 {name}" for name in new_items]
-        return _handled(
-            f"[背包] 發現 {len(new_items)} 個沒看過的道具：{new_items}",
-            commands=commands,
-            commands_reason="背包新道具自動查詢",
-        )
-
-    desc = backpack_watcher.parse_item_description(text)
-    if desc is not None:
-        backpack_watcher.save_item_description(base_dir, desc["display_name"], desc)
-        return _handled(f"[道具說明] 已記錄：{desc['display_name']} → {desc['description']}")
+    if shape == _SHAPE_ITEM_DESCRIPTION:
+        return _handle_item_description(structured, base_dir, account_id)
 
     return _no_match()
 
@@ -434,7 +419,25 @@ def _handle_forge_result(structured, base_dir, account_id):
         f"[鑄造] 「{name}」出爐（{structured['element']}屬性・{structured['type']}・戰力{structured['power']}）"
         f"——等下次查「我的陀螺」確認有留下才會記進鑄造圖鑑"
     )
+def _handle_backpack(structured, base_dir, account_id):
+    backpack_watcher.save_inventory_snapshot(base_dir, account_id, structured)
 
+    new_items = backpack_watcher.find_new_items(base_dir, structured)
+    if not new_items:
+        return _handled("[背包] 已更新")
+
+    backpack_watcher.mark_items_as_queried(base_dir, new_items)
+    commands = [f"道具說明 {name}" for name in new_items]
+    return _handled(
+        f"[背包] 發現 {len(new_items)} 個沒看過的道具：{new_items}",
+        commands=commands,
+        commands_reason="背包新道具自動查詢",
+    )
+
+
+def _handle_item_description(structured, base_dir, account_id):
+    backpack_watcher.save_item_description(base_dir, structured["display_name"], structured)
+    return _handled(f"[道具說明] 已記錄：{structured['display_name']} → {structured['description']}")
 
 _PENDING_FORGE_FILENAME = "pending_forge_results.json"
 

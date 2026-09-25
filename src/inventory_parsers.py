@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # SSR 以下數量龐大且用途低，逐筆存反而拖累效能跟可讀性）。
 
 _TOP_LINE_PATTERN = re.compile(
-    r"^(\d+)\.\s*(⭐|🌗)?(✦*)(🔱|👑)?\s*(.+?)｜(\S+)・(\S+)・戰力\s*(\d+)$"
+    r"^(\d+)\.\s*(⭐|🌗)?(✦*)(🔱|👑)?\s*(.+?)｜(\S+?)・(\S+?)(?:・(\S+?))?・戰力\s*(\d+)$"
 )
 
 _ENHANCEMENT_PATTERN = re.compile(r"\+(\d+)")
@@ -82,6 +82,15 @@ def parse_my_tops(text):
     parsing/response_shapes/my_tops.py 的 format_for_display() 自己做）。
     rarity_summary 還是照算，方便顯示層快速拿到各稀有度數量，不用每次
     自己重新數 detailed。
+
+    2026-09 修正：有些陀螺（不限稀有度，看是否已顯示五行屬性，例如
+    「神・攻擊型・火屬性・戰力 752」）訊息裡會多帶一段五行屬性，原本的
+    _TOP_LINE_PATTERN 只認得「稀有度・類型・戰力」兩段，遇到三段的情況
+    regex 還是「比對成功」，但因為 \\S+ 連「・」都會吃進去，會把 rarity/type
+    兩個欄位黏錯（例如 rarity 變成「神・攻擊型」、type 變成「火屬性」），
+    屬性本身完全沒被留下來，rarity_summary 統計也跟著錯——不是沒有屬性
+    資料，是解析當下就已經悄悄壞掉，一直沒被發現。現在 pattern 把屬性段
+    獨立成可選的一組，才不會誤吃進 rarity/type。
     """
     detailed = []
     rarity_summary = {}
@@ -93,7 +102,7 @@ def parse_my_tops(text):
         if not m:
             continue
 
-        index, marker, stars, evo_marker, name_raw, rarity, top_type, power = m.groups()
+        index, marker, stars, evo_marker, name_raw, rarity, top_type, element, power = m.groups()
         total_matched += 1
         rarity_summary[rarity] = rarity_summary.get(rarity, 0) + 1
 
@@ -112,6 +121,8 @@ def parse_my_tops(text):
             "match_key": _normalize_key(name_raw),
             "rarity": rarity,
             "type": top_type,
+            "element": element,  # 訊息直接標明的五行屬性；沒標示（多數 SSR 以下、
+                                  # 或還沒覺醒的高稀有度）就是 None，不代表真的沒有屬性
             "power": int(power),
             "stars": len(stars),
             "status": status,
@@ -309,6 +320,14 @@ def annotate_special_source(tops_detailed, base_dir, account_id):
     旋王／旋神／UR精選是全帳號共通資料（data/common/），鑄造陀螺是這個
     帳號自己的（data/{帳號ID}/）——兩份分開存放、分開讀取，這裡合併成
     同一份查詢清單使用，呼叫端不用關心底層是兩份檔案。
+
+    2026-09 修正：element 現在優先信任 parse_my_tops() 直接從「我的陀螺」
+    訊息文字讀到的值（修完 _TOP_LINE_PATTERN 之後，已顯示五行屬性的陀螺
+    會直接帶著這個欄位）——這是遊戲當下直接回報的真實值，比對照表用名字
+    猜的準。這裡呼叫時如果 top 已經有直接讀到的 element，就不再用對照表
+    的猜測值覆蓋掉；只有真的沒有直接讀到（還沒覺醒、或訊息本身不顯示）時
+    才退回用對照表補。source_category/base_name 這兩個只有對照表查得到，
+    不受這個優先順序影響，一律照對照表寫。
     """
     common_catalog = _load_special_catalog(base_dir)
     cast_catalog = _load_cast_catalog(base_dir, account_id)
@@ -325,16 +344,19 @@ def annotate_special_source(tops_detailed, base_dir, account_id):
 
     for top in tops_detailed:
         name = top.get("name", "")
+        has_direct_element = top.get("element") is not None
         for base_name, category, info in flat:
             if name.endswith(base_name):
                 top["source_category"] = category
                 top["base_name"] = base_name
-                top["element"] = info.get("element")
+                if not has_direct_element:
+                    top["element"] = info.get("element")
                 break
         else:
             top["source_category"] = None
             top["base_name"] = None
-            top["element"] = None
+            if not has_direct_element:
+                top["element"] = None
 
     return tops_detailed
 

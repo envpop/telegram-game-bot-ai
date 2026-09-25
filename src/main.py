@@ -92,6 +92,8 @@ dispatcher = ActionDispatcher(
 # /sched 風格的指令不在這裡登記，維持原本 scheduler.parse_sched() 那條
 # 路徑（本來就是同一種模式，只是命名前綴比較多樣，不適合用簡單前綴比對）。
 TERMINAL_COMMANDS = {
+    "/sched": scheduler.handle_command,
+    "/alias": scheduler.handle_alias_command,
     "/delay": executor.handle_delay_command,
     "/auto": auto_toggle.handle_command,
     "/sakura": sakura_strategy.handle_command,
@@ -123,31 +125,8 @@ async def terminal_input_loop():
             continue
 
         if text.startswith("/"):
-            try:
-                parsed = scheduler.parse_sched(text)
-            except scheduler.SchedParseError as e:
-                print(f"[錯誤] {e}")
-                continue
-
-            if parsed is None:
-                print(f"[錯誤] 不認得的指令「{text}」，開頭 / 的訊息不會被送出。\n{scheduler.SCHED_USAGE}")
-                continue
-
-            if isinstance(parsed, scheduler.SchedControl):
-                if parsed.action == "list":
-                    jobs = scheduler.list_jobs()
-                    if not jobs:
-                        print("[SCHED] 目前沒有進行中的排程")
-                    else:
-                        for j in jobs:
-                            print(f"  {j['job_id']} ｜ {j['command']} ｜ repeat={j['repeat']}")
-                elif parsed.action == "cancel":
-                    ok = scheduler.cancel(parsed.target)
-                    print(f"[SCHED] 已取消 {parsed.target}" if ok else f"[SCHED] 找不到 {parsed.target}")
-            else:
-                job_id = scheduler.schedule(parsed)
-                print(f"[SCHED] 已排程 {job_id}：{parsed.summary}"
-                      f"（delay={parsed.delay_seconds:.0f}s, repeat={parsed.repeat}）")
+            print(f"[錯誤] 不認得的指令「{text}」，開頭 / 的訊息不會被送出。")
+            continue
         else:
             await executor.send_now(text, reason="手動輸入(終端機)")
 

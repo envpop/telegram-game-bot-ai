@@ -11,12 +11,18 @@ def _has_image(record):
     return bool(record.get("is_image"))
 
 
-def _trailer(record):
+def _trailer(record, parsed=None):
     """按鈕/圖片的共用附加資訊：按鈕顯示文字選項，圖片只在有圖時提一句，
-    不下載、不顯示路徑（圖片分析是之後才考慮的事，現在不需要）。"""
+    不下載、不顯示路徑（圖片分析是之後才考慮的事，現在不需要）。
+    parsed 有給、且 parsed["buttons_rendered_by_shape"] 是 True 時，代表
+    這則訊息的 shape（format_for_display()）已經把按鈕排版納入 display_text
+    裡了（例如 satellite_training_round 的按鈕格線），這裡就不再重複列一次
+    原始按鈕清單，避免同一組按鈕顯示兩次。"""
     lines = []
     buttons = record.get("buttons") or []
-    if buttons:
+    already_rendered = bool(parsed and parsed.get("buttons_rendered_by_shape"))
+    if buttons and not already_rendered:
+    #if buttons:
         for b in buttons:
             row = b.get("row")
             col = b.get("column")
@@ -102,13 +108,13 @@ def format_display_line(record, parsed):
             display_text = raw_text if raw_text else "<無文字>"
             header = f"[{chat_name} #{message_id}] 🤖伺服器回應（尚未分類）"
         base = f"{header}\n{display_text}"
-        trailer = _trailer(record) + _pulse_trailer_lines(parsed)
+        trailer = _trailer(record, parsed) + _pulse_trailer_lines(parsed)
         return base if not trailer else base + "\n" + "\n".join(trailer)
 
     if source_type == "announcement":
         display_text = raw_text if raw_text else "<無文字>"
         base = f"[{chat_name} #{message_id}] 📢公告（尚未分類）\n{display_text}"
-        trailer = _trailer(record) + _pulse_trailer_lines(parsed)
+        trailer = _trailer(record, parsed) + _pulse_trailer_lines(parsed)
         return base if not trailer else base + "\n" + "\n".join(trailer)
 
     return f"[{chat_name} #{message_id}] {source_type} | {single_line_preview}"
