@@ -145,33 +145,44 @@ def handle_phase_transition(text, delay_seconds, base_dir, account_id):
     重送「連續討伐」。WeaknessParser.parse() 本來就認得換相公告的格式
     (「五行 X→Y　類型 A→B　新弱點:Z」)，直接沿用。
 
-    硬直 delay_seconds 秒是遊戲機制本身的限制，這段時間本來就打不到王；
-    換手動作排在硬直之後、攻擊之前，一次用 scheduler.py 的
-    steps+interval 機制排完(硬直→換手→換手→攻擊，彼此間隔
-    SWITCH_DELAY_SECONDS)，不會太快連續送出指令。"""
+    硬直 delay_seconds 秒是「連續討伐」本身的限制(這段時間打不到王)，
+    但換手不受硬直影響，不需要跟著等——換手立刻送出，只有連續討伐要
+    排到硬直秒數之後。兩者時序彼此獨立，回傳兩個各自獨立的 scheduled
+    Action(見 Architecture Rules.md 7.1)，不要塞進同一個 steps 清單
+    共用一個 delay_seconds，否則換手會被硬直卡住才開始，連續討伐反而
+    比硬直本身還晚恢復(熊 2026-09 反映)。"""
+    attack_action = {
+        "mode": "scheduled", "delay_seconds": delay_seconds, "steps": ["連續討伐"],
+        "interval": (SWITCH_DELAY_SECONDS, SWITCH_DELAY_SECONDS), "chat_id": None,
+        "reason": f"世界王換相，硬直 {delay_seconds} 秒後繼續連續討伐（次數還沒用完）",
+    }
+
     weakness = WeaknessParser.parse(text)
     if weakness is None:
-        # 抓不到新弱點，沒辦法判斷陣容，只能照舊直接重送連續討伐——
-        # 陣容可能不是最佳，但總比完全不打好，不要因為解析失敗就放棄。
-        return {
-            "mode": "scheduled", "delay_seconds": delay_seconds, "steps": ["連續討伐"],
-            "interval": (SWITCH_DELAY_SECONDS, SWITCH_DELAY_SECONDS), "chat_id": None,
-            "reason": f"世界王換相，硬直 {delay_seconds} 秒後繼續連續討伐"
-                      "（次數還沒用完，換相文字抓不到新弱點，陣容可能不是最佳）",
-        }
+        # 抓不到新弱點，沒辦法判斷陣容，也就沒有換手動作要排——照舊
+        # 只送連續討伐這一段，陣容可能不是最佳，但總比完全不打好。
+        attack_action["reason"] += "（換相文字抓不到新弱點，陣容可能不是最佳）"
+        return attack_action
 
     roster = load_roster(base_dir, account_id)
     rules = load_json(RULES_PATH)
-    commands = TopSelector.decide_switch_commands(roster, weakness, rules)
-    commands.append("連續討伐")
+    switch_commands = TopSelector.decide_switch_commands(roster, weakness, rules)
 
-    switch_note = f"先換手（{' → '.join(commands[:-1])}）再" if len(commands) > 1 else ""
-    return {
-        "mode": "scheduled", "delay_seconds": delay_seconds, "steps": commands,
+    attack_action["reason"] = (
+        f"世界王換相(新弱點 {weakness.current_element}屬性)，"
+        f"硬直 {delay_seconds} 秒後繼續連續討伐（次數還沒用完）"
+    )
+
+    if not switch_commands:
+        return attack_action  # 陣容已經合格，不用換手，維持單一 Action
+
+    switch_action = {
+        "mode": "scheduled", "delay_seconds": 0.0, "steps": switch_commands,
         "interval": (SWITCH_DELAY_SECONDS, SWITCH_DELAY_SECONDS), "chat_id": None,
         "reason": f"世界王換相(新弱點 {weakness.current_element}屬性)，"
-                  f"硬直 {delay_seconds} 秒後{switch_note}繼續連續討伐（次數還沒用完）",
+                  f"立即換手（{' → '.join(switch_commands)}），不等硬直",
     }
+    return [switch_action, attack_action]
 
 
 def is_daily_count_exhausted(structured: dict):

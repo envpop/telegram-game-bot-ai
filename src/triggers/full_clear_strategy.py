@@ -162,31 +162,44 @@ def start(text, base_dir, account_id, reason="全程連續討伐，先確認陣�
 def handle_phase_transition(text, delay_seconds, base_dir, account_id):
     """跟 furnace_loop_strategy.handle_phase_transition() 邏輯一致——
     換相會被硬直卡住，次數還沒用完，不是「王死了」也不是「次數用完」，
-    重新判斷陣容後排程恢復連續討伐（換相後弱點/類型可能整個換掉）。"""
+    重新判斷陣容後排程恢復連續討伐（換相後弱點/類型可能整個換掉）。
+
+    硬直只限制連續討伐，不限制換手；換手應立即送出，連續討伐才需要等
+    delay_seconds。兩段時序彼此獨立，回傳兩個各自獨立的 scheduled
+    Action(見 Architecture Rules.md 7.1)，不共用同一個 delay_seconds。"""
+    attack_action = {
+        "mode": "scheduled", "delay_seconds": delay_seconds, "steps": ["連續討伐"],
+        "interval": (SWITCH_DELAY_SECONDS, SWITCH_DELAY_SECONDS), "chat_id": None,
+        "reason": f"世界王換相，硬直 {delay_seconds} 秒後繼續連續討伐（全程模式）",
+    }
+
     weakness = WeaknessParser.parse(text)
     if weakness is None:
-        return {
-            "mode": "scheduled", "delay_seconds": delay_seconds, "steps": ["連續討伐"],
-            "interval": (SWITCH_DELAY_SECONDS, SWITCH_DELAY_SECONDS), "chat_id": None,
-            "reason": f"世界王換相，硬直 {delay_seconds} 秒後繼續連續討伐"
-                      "（全程模式，換相文字抓不到新弱點，陣容可能不是最佳）",
-        }
+        attack_action["reason"] += "（換相文字抓不到新弱點，陣容可能不是最佳）"
+        return attack_action
 
     if weakness.boss_name:
         remember_boss(base_dir, account_id, weakness.boss_name, text)
 
     roster = load_roster(base_dir, account_id)
     rules = load_json(RULES_PATH)
-    commands = TopSelector.decide_switch_commands(roster, weakness, rules)
-    commands.append("連續討伐")
+    switch_commands = TopSelector.decide_switch_commands(roster, weakness, rules)
 
-    switch_note = f"先換手（{' → '.join(commands[:-1])}）再" if len(commands) > 1 else ""
-    return {
-        "mode": "scheduled", "delay_seconds": delay_seconds, "steps": commands,
+    attack_action["reason"] = (
+        f"世界王換相(新弱點 {weakness.current_element}屬性)，"
+        f"硬直 {delay_seconds} 秒後繼續連續討伐（全程模式）"
+    )
+
+    if not switch_commands:
+        return attack_action  # 陣容已經合格，不用換手
+
+    switch_action = {
+        "mode": "scheduled", "delay_seconds": 0.0, "steps": switch_commands,
         "interval": (SWITCH_DELAY_SECONDS, SWITCH_DELAY_SECONDS), "chat_id": None,
         "reason": f"世界王換相(新弱點 {weakness.current_element}屬性)，"
-                  f"硬直 {delay_seconds} 秒後{switch_note}繼續連續討伐（全程模式）",
+                  f"立即換手（{' → '.join(switch_commands)}），不等硬直（全程模式）",
     }
+    return [switch_action, attack_action]
 
 
 def decide(ctx):

@@ -133,16 +133,25 @@ class ActionDispatcher:
                 print(f"[{label}] 🔕 自動發送已關閉，略過判斷（終端機輸入 /auto 查看開關狀態）")
                 continue
             catalog = strategy.load_catalog(self.base_dir)
-            action = strategy.decide_action(text, catalog, self.base_dir, self.account_id)
+            result = strategy.decide_action(text, catalog, self.base_dir, self.account_id)
             # 2026-09-05 改用共用的 actions.execute_dict()：這支迴圈原本
             # 自己重複寫了一次「now/scheduled/sequence 各自怎麼轉成 Action」，
             # 跟 furnace_loop_strategy.py 需要的「事後補送 plain-dict 動作」
             # 是同一套轉換邏輯，抽到 actions.py 共用，這裡不用再各自維護。
-            if await actions.execute_dict(action):
-                if action["mode"] == "sequence":
-                    print(f"[公告觸發] 🔁 {action['reason']}"
-                          f"（依序送出：{' → '.join(action['commands'])}）")
-                handled_any = True
+            #
+            # 世界王換相時新增：一次判斷可能拆成「換手」跟「連續討伐」兩段
+            # 彼此獨立的時序（見 Architecture Rules.md 7.1），decide_action()
+            # 這時回傳的是 list 而不是單一 dict。這裡統一攤平成清單逐一
+            # 執行——純粹是「回傳值可能是 dict 也可能是 list」的攤平邏輯，
+            # 不涉及任何遊戲規則判斷，其他策略模組(sakura/guard_clear)
+            # 維持回傳單一 dict 不受影響。
+            action_list = result if isinstance(result, list) else [result]
+            for action in action_list:
+                if await actions.execute_dict(action):
+                    if action["mode"] == "sequence":
+                        print(f"[公告觸發] 🔁 {action['reason']}"
+                              f"（依序送出：{' → '.join(action['commands'])}）")
+                    handled_any = True
         return handled_any  # 沒有任何策略模組判斷出動作，純資訊公告
 
     # ---- 陀螺／衛星／背包／道具說明：四種資料同步都交給 profile_sync_strategy 統一處理 ----
