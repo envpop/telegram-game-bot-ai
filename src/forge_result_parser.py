@@ -6,9 +6,14 @@ forge_result_parser.py
 自訂命名（emoji/簡單詞）的陀螺，屬性資料只在鑄造當下的公告訊息裡出現過，
 之後的收藏/天賦清單都不會再重複顯示。
 
-用法：每次抓到「鑄造完成」訊息就呼叫 parse_forge_result()，
-存進 cast_tops_catalog（依名稱 key），之後 talent_overview.build_unified_view()
-遇到查無屬性的陀螺，可以 fallback 查這份 catalog 補上。
+用法：parsing/response_shapes/forge_result.py 收到「鑄造完成」訊息時
+呼叫 parse_forge_result()，之後 profile_sync_strategy.py 讀 shape 解析好
+的 structured 資料，用 load_cast_catalog/_to_catalog_entry/save_cast_catalog
+寫進 cast_tops_catalog.json；roster_loader.py／inventory_parsers.py 的
+annotate_special_source() 之後查無屬性的陀螺，可以 fallback 查這份 catalog
+補上（2026-09 更正：原本這裡寫的下游消費者是 talent_overview.py，那支
+已確認是死碼——見 decisions-and-learnings，跟現在實際運作的路徑對不上，
+已改成正確的下游）。
 """
 
 import re
@@ -100,7 +105,15 @@ def save_cast_catalog(catalog: dict, path: Path):
 
 
 def add_cast_entry(message: str, catalog_path: Path) -> Optional[ForgeResult]:
-    """解析一則鑄造完成訊息，寫進 cast_tops_catalog.json（依名稱累加/覆蓋）。"""
+    """解析一則鑄造完成訊息，寫進 cast_tops_catalog.json（依名稱累加/覆蓋）。
+
+    2026-09 確認：目前實際運作的路徑（profile_sync_strategy.py 的
+    _commit_matching_pending_forge()）是用 shape 早就解析好的候選資料
+    重建 ForgeResult，不是拿原始訊息文字呼叫這裡，所以它沒有呼叫這個
+    函式，改成自己內聯重寫一次同樣的 load/寫入/save 三步驟——這支函式
+    目前沒有呼叫端，但保留著：如果之後有場景是直接拿到原始鑄造訊息文字
+    （不是已經解析過的候選資料），這裡可以直接用，不用重寫。
+    """
     result = parse_forge_result(message)
     if result is None:
         return None
@@ -108,14 +121,6 @@ def add_cast_entry(message: str, catalog_path: Path) -> Optional[ForgeResult]:
     catalog[result.name] = _to_catalog_entry(result)
     save_cast_catalog(catalog, catalog_path)
     return result
-
-
-# 舊名字保留為別名，避免其他還沒改完的呼叫端直接炸掉；
-# 新程式碼一律用上面的 load_cast_catalog / save_cast_catalog / add_cast_entry。
-load_forge_catalog = load_cast_catalog
-save_forge_catalog = save_cast_catalog
-add_forge_result = add_cast_entry
-
 
 if __name__ == "__main__":
     sample = """⚒️✨ 鑄造完成！你設計的「一刀」出爐！
