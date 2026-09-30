@@ -22,12 +22,16 @@ from dotenv import load_dotenv
 from telethon import TelegramClient
 
 import credentials
+from data_store import find_base_dir, config_dir
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+# 2026-09：改用 data_store.find_base_dir()（往上找 src/+data/），取代原本
+# 寫死「往上兩層」的算法——寫死的版本一旦這支檔案被搬進 src/ 的子資料夾
+# （熊計劃中的 src/ 分類重整）就會算錯，找 src/+data/ 的版本搬到哪層都對。
+BASE_DIR = find_base_dir(Path(__file__).parent)
 
 load_dotenv(BASE_DIR / ".env")
 
-ACCOUNTS_CONFIG_FILE = BASE_DIR / "config" / "accounts.json"
+ACCOUNTS_CONFIG_FILE = config_dir(BASE_DIR) / "accounts.json"
 
 
 def _load_accounts_config():
@@ -58,7 +62,19 @@ _creds = credentials.get_account_credentials(ACTIVE_ACCOUNT_CONFIG)
 
 API_ID = _creds["api_id"]
 API_HASH = _creds["api_hash"]
-SESSION_NAME = ACTIVE_ACCOUNT_CONFIG["session_name"]
+# 2026-09：錨定到 BASE_DIR，不再是純檔名——Telethon 會把這個字串當成
+# 相對於「目前執行目錄」的路徑去建立 .session 檔，不是相對於專案根目錄。
+# 原本沒錨定時，從 src/ 底下執行跟從專案根目錄執行，.session 檔會生成在
+# 不同地方；之後如果改變執行方式（例如 src/ 分類重整、換成 python -m
+# 執行），檔案位置可能會跟著換，看起來像是登入資訊「不見了」，其實是
+# 換了地方重新生成。這裡刻意不透過 data_store.py 提供共用函式，只有
+# telegram_client.py 自己知道 session 存在哪裡，其他模組不需要、也不該
+# 知道這個路徑。
+#
+# 注意：如果你原本是從專案根目錄執行程式，現有的 .session 檔應該已經
+# 剛好在這個位置，這次改動不會讓你重新登入；如果不確定，啟動前先確認
+# BASE_DIR 底下（專案根目錄）有沒有看到現有的 .session 檔案。
+SESSION_NAME = str(BASE_DIR / ACTIVE_ACCOUNT_CONFIG["session_name"])
 
 print(f"[telegram_client] 使用帳號「{ACTIVE_ACCOUNT_CONFIG.get('label', ACTIVE_ACCOUNT_KEY)}」")
 #      f"（憑證來源：{_creds['source']}，session：{SESSION_NAME})" #隱私問題先不顯示

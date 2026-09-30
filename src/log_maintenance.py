@@ -16,7 +16,11 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+from data_store import find_base_dir
+
+# 2026-09：改用 data_store.find_base_dir()，取代原本寫死「往上兩層」的
+# 算法，理由跟 telegram_client.py 的同一處修改一致（見該檔案說明）。
+BASE_DIR = find_base_dir(Path(__file__).parent)
 LOG_DIR = BASE_DIR / "logs"
 
 COMPRESS_AFTER_DAYS = 7
