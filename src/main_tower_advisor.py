@@ -12,22 +12,14 @@ loop_mapping_note），實際遊戲畫面顯示方式需熊之後確認回報，
 import json
 from pathlib import Path
 
-def _find_base_dir(start: Path) -> Path:
-    """往上找同時有 src/ 跟 data/ 的資料夾，對齊專案既有原則
-    （不寫死 .parent.parent，模組被移動位置也不會壞）。
-    找不到就退回 start 自己（方便單獨測試時用當前目錄）。"""
-    cur = start.resolve()
-    for _ in range(6):
-        if (cur / "src").is_dir() and (cur / "data").is_dir():
-            return cur
-        if cur.parent == cur:
-            break
-        cur = cur.parent
-    return start.resolve()
+from data_store import find_base_dir, common_dir
 
-BASE_DIR = _find_base_dir(Path(__file__).parent)
-BOSS_CATALOG_PATH = BASE_DIR / "data" / "common" / "boss_catalog_main_tower.json"
-RULES_PATH = BASE_DIR / "data" / "common" / "element_type_rules.json"
+# 2026-09：改用 data_store.find_base_dir()，取代這支自己維護的
+# _find_base_dir()——跟 telegram_client.py／log_maintenance.py 是同一套
+# 演算法被三處重複維護的問題，收斂成 data_store.py 唯一版本。
+BASE_DIR = find_base_dir(Path(__file__).parent)
+BOSS_CATALOG_PATH = common_dir(BASE_DIR) / "boss_catalog_main_tower.json"
+RULES_PATH = common_dir(BASE_DIR) / "element_type_rules.json"
 
 
 def load_json(path):

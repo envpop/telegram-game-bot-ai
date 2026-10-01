@@ -19,7 +19,13 @@ import json
 import re
 from pathlib import Path
 
-from telegram_client import BASE_DIR
+from data_store import find_base_dir, common_dir
+
+# 2026-09：BASE_DIR 改用 data_store.find_base_dir()，不透過
+# telegram_client.py——response_parser.py 啟動時會 import 所有 shape
+# 模組，如果這裡跟 telegram_client 掛鉤，等於載入所有 shape 就會順便
+# 觸發連線憑證設定的副作用，不必要。
+BASE_DIR = find_base_dir(Path(__file__).parent)
 
 _CATALOG_CACHE = None
 
@@ -27,7 +33,7 @@ NEEDS_BUTTONS = True
 
 
 def _catalog_path(base_dir):
-    return Path(base_dir) / "data" / "common" / "satellite_training_catalog.json"
+    return common_dir(base_dir) / "satellite_training_catalog.json"
 
 
 def load_catalog(base_dir, force_reload=False):

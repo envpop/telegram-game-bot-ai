@@ -11,20 +11,19 @@ executor.click_button(chat_id, message_id, data, ...) 需要的參數。
 """
 
 import json
-from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, Dict
 
 from telegram_client import BASE_DIR
+from data_store import raw_log_path
 
-LOCAL_TZ = timezone(timedelta(hours=8))
-LOG_DIR = BASE_DIR / "logs"
-RAW_LOG_FILENAME = "telegram_raw.jsonl"
+# 2026-09：LOCAL_TZ／LOG_DIR／RAW_LOG_FILENAME／日期資料夾命名邏輯，
+# 改成呼叫 data_store.raw_log_path()，跟 monitor.py／log_maintenance.py
+# 共用同一份定義，不再各自重複維護。
 
 
 def _today_log_path() -> Path:
-    today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
-    return LOG_DIR / today / RAW_LOG_FILENAME
+    return raw_log_path(BASE_DIR)
 
 
 def find_button(text_match: str, chat_id: Optional[int] = None,

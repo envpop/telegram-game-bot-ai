@@ -13,7 +13,7 @@ import logging
 import re
 from pathlib import Path
 
-from data_store import account_dir
+from data_store import account_dir, common_dir
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +286,7 @@ def _load_special_catalog(base_dir):
     global _special_catalog_cache
     if _special_catalog_cache is not None:
         return _special_catalog_cache
-    f = Path(base_dir) / "data" / "common" / _SPECIAL_CATALOG_FILE
+    f = common_dir(base_dir) / _SPECIAL_CATALOG_FILE
     if not f.exists():
         _special_catalog_cache = {}
         return _special_catalog_cache

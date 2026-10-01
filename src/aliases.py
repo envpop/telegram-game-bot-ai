@@ -34,9 +34,15 @@ aliases.py
 import json
 import os
 import re
+from pathlib import Path
 from typing import List, Tuple
 
-_ALIASES_PATH = os.path.join("config", "aliases.json")
+from data_store import find_base_dir, config_dir
+
+# 2026-09：改成錨定 BASE_DIR，取代原本沒有錨定的純相對路徑
+# os.path.join("config", "aliases.json")——那種寫法找不找得到檔案要看
+# 程式從哪個目錄啟動，跟其他模組的路徑規則不一致。
+_ALIASES_PATH = config_dir(find_base_dir(Path(__file__).parent)) / "aliases.json"
 _PLACEHOLDER_RE = re.compile(r"\{(\d+)\}")
 
 Segment = Tuple[str, List[str]]  # ("once" | "repeat", 已代入參數的步驟清單)

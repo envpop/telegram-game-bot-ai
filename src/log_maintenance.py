@@ -16,18 +16,20 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from data_store import find_base_dir
+from data_store import (
+    find_base_dir, log_dir, RAW_LOG_FILENAME, COMPRESSED_LOG_FILENAME,
+)
 
-# 2026-09：改用 data_store.find_base_dir()，取代原本寫死「往上兩層」的
-# 算法，理由跟 telegram_client.py 的同一處修改一致（見該檔案說明）。
+# 2026-09：BASE_DIR 改用 data_store.find_base_dir()，取代原本寫死
+# 「往上兩層」的算法，理由跟 telegram_client.py 的同一處修改一致（見該
+# 檔案說明）。RAW_LOG_FILENAME／COMPRESSED_LOG_FILENAME 也改成從
+# data_store 匯入，不再自己定義一份，跟 monitor.py／button_lookup.py
+# 共用同一份檔名常數。
 BASE_DIR = find_base_dir(Path(__file__).parent)
-LOG_DIR = BASE_DIR / "logs"
+LOG_DIR = log_dir(BASE_DIR)
 
 COMPRESS_AFTER_DAYS = 7
 DELETE_COMPRESSED_AFTER_DAYS = 90
-
-RAW_LOG_FILENAME = "telegram_raw.jsonl"
-COMPRESSED_LOG_FILENAME = "telegram_raw.jsonl.gz"
 
 
 def _parse_day_dir_date(day_dir: Path):

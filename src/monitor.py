@@ -2,20 +2,20 @@ import os
 import json
 import argparse
 import asyncio
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from telethon import events
 
 from telegram_client import client, BASE_DIR, is_self_sent
 from delivery_guard import DeliveryGuard
+from data_store import log_dir, log_day_dir, raw_log_path, LOCAL_TZ
 # ============================================================
 # 基本設定
 # ============================================================
 
-LOG_DIR = BASE_DIR / "logs"
+LOG_DIR = log_dir(BASE_DIR)
 MEDIA_DIR = LOG_DIR / "media"
-LOCAL_TZ = timezone(timedelta(hours=8))
 
 MONITORED_CHATS = {
     8707720905: "摸熊神社",
@@ -86,10 +86,10 @@ def ensure_dir(path: Path):
     path.mkdir(parents=True, exist_ok=True)
 
 def get_day_dir():
-    today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
-    day_dir = LOG_DIR / today
-    ensure_dir(day_dir)
-    return day_dir
+    # 2026-09：日期資料夾命名格式（YYYY-MM-DD）改成呼叫
+    # data_store.log_day_dir()，跟 log_maintenance.py／button_lookup.py
+    # 共用同一份定義，不再各自重複拼字串。
+    return log_day_dir(BASE_DIR)
 
 def get_media_day_dir():
     day_dir = get_day_dir() / "media"
@@ -97,7 +97,7 @@ def get_media_day_dir():
     return day_dir
 
 def get_log_file():
-    return get_day_dir() / "telegram_raw.jsonl"
+    return raw_log_path(BASE_DIR)
 
 def save_raw_event(record):
     log_file = get_log_file()

@@ -27,7 +27,17 @@ button_lookup.py）不用改，那條路徑本身沒問題，只是它算 BASE_D
 演算法要跟著這裡的修法更新（見 telegram_client.py 的對應修改）。
 """
 
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+# 2026-09 新增：log 相關的共用常數跟 log_day_dir()／raw_log_path()。
+# LOCAL_TZ／RAW_LOG_FILENAME／日期資料夾命名格式（YYYY-MM-DD），原本在
+# monitor.py／button_lookup.py／log_maintenance.py 三處各自重複定義，
+# 一份改了另外兩份不會跟著改。這裡收成唯一版本，三處都改成呼叫這裡。
+LOCAL_TZ = timezone(timedelta(hours=8))
+RAW_LOG_FILENAME = "telegram_raw.jsonl"
+COMPRESSED_LOG_FILENAME = "telegram_raw.jsonl.gz"
+DEBUG_TAIL_FILENAME = "debug_recent.jsonl"
 
 
 def find_base_dir(start: Path) -> Path:
@@ -70,8 +80,24 @@ def config_dir(base_dir):
 
 def log_dir(base_dir):
     """logs/ 根目錄——telegram_raw.jsonl、debug_recent.jsonl、壓縮檔、
-    media/ 子資料夾都在這底下，依日期再分子資料夾（見呼叫端 monitor.py
-    的 get_day_dir()）。"""
+    media/ 子資料夾都在這底下，依日期再分子資料夾（見 log_day_dir()）。"""
     d = Path(base_dir) / "logs"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def log_day_dir(base_dir, day=None):
+    """回傳指定日期（預設今天，依 LOCAL_TZ 判斷）的 log 子資料夾，例如
+    logs/2026-09-30/。day 要傳 datetime.date（不是 datetime），跟
+    log_maintenance.py 既有的 _parse_day_dir_date() 回傳型別一致，方便
+    直接傳進來。這是日期資料夾命名格式（YYYY-MM-DD）唯一定義的地方。
+    """
+    day = day or datetime.now(LOCAL_TZ).date()
+    d = log_dir(base_dir) / day.strftime("%Y-%m-%d")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def raw_log_path(base_dir, day=None):
+    """指定日期（預設今天）的 telegram_raw.jsonl 完整路徑。"""
+    return log_day_dir(base_dir, day) / RAW_LOG_FILENAME
