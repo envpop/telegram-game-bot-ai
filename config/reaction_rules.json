@@ -9,6 +9,33 @@
       "auto_execute": true,
       "action": "收遠征",
       "cooldown_seconds": 60
+    },
+    {
+      "id": "鑄造",
+      "match_pattern": "300/300n目前檔位:高階｜可以「鑄造」了",
+      "description": "由 /react 建立",
+      "risk_level": "safe",
+      "auto_execute": false,
+      "action": "鑄造",
+      "cooldown_seconds": 60
+    },
+    {
+      "id": "forge",
+      "match_pattern": "300/300\\\\n目前檔位:高階｜可以「鑄造」了",
+      "description": "由 /react 建立",
+      "risk_level": "safe",
+      "auto_execute": false,
+      "action": "鑄造",
+      "cooldown_seconds": 60
+    },
+    {
+      "id": "auto_forge",
+      "match_pattern": "熔爐能量 300/300\\n目前檔位:高階｜可以「鑄造」了",
+      "description": "由 /react 建立",
+      "risk_level": "safe",
+      "auto_execute": false,
+      "action": "鑄造",
+      "cooldown_seconds": 60
     }
   ]
 }

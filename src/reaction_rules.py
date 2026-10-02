@@ -32,6 +32,8 @@ class ReactionRuleEngine:
 
     async def handle(self, chat_name, text):
         """若文字命中規則就處理；回傳 True 表示至少命中一條規則。"""
+        # 管理指令可在執行期間新增規則；每次處理訊息前重新讀取，讓變更立即生效。
+        self.rules = self.load_rules()
         matched = False
         for rule in self.rules:
             if rule["match_pattern"] not in text:

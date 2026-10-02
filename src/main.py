@@ -2,6 +2,7 @@ import asyncio
 
 from telegram_client import client, BASE_DIR
 import auto_toggle
+import reaction_manager
 import monitor
 import executor
 import scheduler
@@ -96,6 +97,7 @@ TERMINAL_COMMANDS = {
     "/alias": scheduler.handle_alias_command,
     "/delay": executor.handle_delay_command,
     "/auto": auto_toggle.handle_command,
+    "/react": reaction_manager.handle_command,
     "/sakura": sakura_strategy.handle_command,
     "/click": executor.handle_click_command,
     "/wbmode":world_boss_mode.handle_command,
