@@ -56,6 +56,9 @@ from .response_shapes import world_boss_continuous_report
 from .response_shapes import satellite_training_round
 from .response_shapes import backpack
 from .response_shapes import item_description
+from .response_shapes import forge_result
+from .response_shapes import event_tower_run
+from .response_shapes import advanced_event_tower_run
 
 _ROUTE_MAP = {
     ServerSubtype.RESPONSE: "server_response_flow",
@@ -85,6 +88,7 @@ _KNOWN_SHAPES = [
     satellite_training_round,
     backpack,
     item_description,
+    forge_result,
     my_tops,
     bindings,
     guard_status,
@@ -101,6 +105,8 @@ _KNOWN_SHAPES = [
     furnace_overview,
     furnace_feed_blocked,
     world_boss_continuous_report,
+    event_tower_run,
+    advanced_event_tower_run,
 ]
 
 
