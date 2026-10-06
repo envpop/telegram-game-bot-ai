@@ -102,6 +102,7 @@ TERMINAL_COMMANDS = {
     "/click": executor.handle_click_command,
     "/wbmode":world_boss_mode.handle_command,
     "/furnace": furnace_cycle_strategy.handle_command,
+    "/plan": scheduler.handle_plan_command,
 }
 
 

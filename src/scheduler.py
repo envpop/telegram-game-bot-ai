@@ -11,18 +11,38 @@ segments: List[Tuple[str, List[str]]]——每個區塊是 ("once"|"repeat", 步
 這讓 alias（見 aliases.py）可以定義任意交錯的 once→repeat→once→... 順序，
 不再侷限「只能一組 once 接一組 repeat」。純分號分隔的普通 /sched 指令
 （不透過 alias）等同於單一個 repeat 區塊，行為跟改版前一致。
+
+2026-10 第一階段：新增兩個「選用」參數 lane= / pri=，以及 job_id 改成遞增編號。
+  - lane=名稱：同一個 lane 的排程「嚴格依下指令的順序」一個接一個執行（前一個整個
+    做完才輪到下一個），不同 lane 互相交錯。at=/delay= 只是這個 job 的最早開始
+    時間，不會讓排在它後面的 job 插隊：前面的 job 還在等 at= 時間，後面的也一起等。
+    所以 lane 內的順序就是下指令（或 plan 檔）的行順序，要按時間先後就照時間排。
+  - hold=時間（只能搭配 lane=）：這個 job 全部做完後，lane 再多佔住這麼久才輪到下一個，
+    例如 hold=20s。整個 job 只算一次（不是每一輪 repeat 都停）。可用 /sched cancel 取消。
+  - pri=high|normal|low（或整數，越小越優先）：多個排程在同一瞬間都要送出時，
+    由單一閘門依優先權決定誰先；閘門在每次送出之間強制隔 GATE_MIN_GAP_SECONDS。
+  - 沒寫 lane 也沒寫 pri 的排程完全不經過鎖與閘門，行為跟改版前一致。
+  - job_id 從 job-<毫秒> 改成 j1、j2、j3…（遞增，不會碰撞，也比較好打）。
+
+2026-10 第二階段 A：新增 /plan（handle_plan_command，檔案讀取在 plans.py）。
+plan 是一份「每行一條 /sched」的文字檔，載入時每行各自展開成獨立的 job；
+lane/pri 由每一行自己決定，plan 本身不強制。ScheduledJob／SchedControl 都沒動。
 """
 
 import asyncio
+import heapq
+import itertools
 import random
 import re
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, List, Callable, Awaitable, Union
 
 import aliases
 import executor
+import plans
 
 _SCHED_PREFIX = "/sched"
 _DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(s|m|h)?$")
@@ -31,6 +51,13 @@ _DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(s|m|h)?$")
 MIN_INTERVAL_SECONDS = 0.1
 # repeat > 1 但沒指定 interval 時使用的預設間隔（跟上面的下限是兩件事，各自可調）。
 DEFAULT_INTERVAL_SECONDS = 2.0
+
+# 優先權：數字越小越優先。pri= 可以寫名稱或整數。
+_PRI_NAMES = {"high": 0, "normal": 1, "low": 2}
+PRI_NORMAL = 1
+# 優先權閘門：兩次「帶 lane/pri 的送出」之間的最小間隔（秒）。沒有這段間隔，
+# 因為文字指令瞬間就送完，優先權幾乎沒有效果。只影響帶 lane/pri 的排程。
+GATE_MIN_GAP_SECONDS = 0.5
 
 SCHED_USAGE = (
     "/sched 用法：\n"
@@ -48,6 +75,11 @@ SCHED_USAGE = (
     "  （repeat 可簡寫 rep，interval 可簡寫 int；用分號 ; 分隔多個指令可依序執行；\n"
     "   　多指令、rep>1 或使用 alias 沒給 int 時會套用預設間隔）\n"
     "  （查詢有哪些 alias 可用，改用 /alias list，不透過 /sched）\n"
+    "  /sched lane=npc int=10s cmd1;cmd2       → 同一個 lane 的排程嚴格依下指令順序執行（前一個做完才輪到下一個），不同 lane 互相交錯\n"
+    "  /sched lane=npc hold=20s 指令           → 這個排程做完後，lane 再保留 20 秒才輪到下一個（只能搭配 lane=）\n"
+    "  /sched pri=high 指令內容                → 優先權 high/normal/low（或整數，越小越優先），\n"
+    "                                           多個排程同一瞬間都要送出時誰先；low 會讓路\n"
+    "  （沒寫 lane 或 pri 的排程維持原本行為：各自獨立、時間到就送）\n"
     "  /sched list                             → 列出進行中的排程\n"
     "  /sched cancel <job_id>                  → 取消指定排程\n"
     "  /sched cancel all  （或 /sched stop）    → 取消全部排程"
@@ -86,6 +118,25 @@ def parse_interval(token: str) -> Tuple[float, float]:
     return (v, v)
 
 
+def parse_priority(token: str) -> int:
+    """pri= 的值：high/normal/low，或任意整數（越小越優先）。"""
+    t = token.strip().lower()
+    if t in _PRI_NAMES:
+        return _PRI_NAMES[t]
+    try:
+        return int(t)
+    except ValueError:
+        raise SchedParseError(f"pri 必須是 high/normal/low 或整數：{token}\n{SCHED_USAGE}")
+
+
+def _pri_label(pri: int) -> str:
+    """顯示用：把整數轉回名稱（high/normal/low），其他整數照原樣。"""
+    for name, value in _PRI_NAMES.items():
+        if value == pri:
+            return name
+    return str(pri)
+
+
 def _seconds_until(hhmm: str) -> float:
     now = datetime.now()
     try:
@@ -98,6 +149,11 @@ def _seconds_until(hhmm: str) -> float:
     return (target - now).total_seconds()
 
 
+# job_id 用遞增編號（j1、j2…）：比毫秒時間戳短、好打，也不會在同一毫秒內碰撞。
+# 計數器只在這次程式執行期間有效；job 本來就不持久化，所以重開從 1 開始沒有影響。
+_job_seq = itertools.count(1)
+
+
 @dataclass
 class ScheduledJob:
     segments: List[Tuple[str, List[str]]]  # [("once"|"repeat", 步驟清單), ...]，依序執行
@@ -106,7 +162,13 @@ class ScheduledJob:
     interval: Tuple[float, float] = (0.0, 0.0)
     chat_id: Optional[int] = None
     reason: Optional[str] = None
-    job_id: str = field(default_factory=lambda: f"job-{int(time.time() * 1000)}")
+    job_id: str = field(default_factory=lambda: f"j{next(_job_seq)}")
+    # 以下兩個是 2026-10 新增的選用欄位，放在最後、預設 None：外部（actions.py）用
+    # 關鍵字參數建構，沒傳就是 None，行為跟以前一樣。
+    lane: Optional[str] = None  # 同 lane 依序執行；None = 不排隊
+    pri: Optional[int] = None  # 同一瞬間誰先送；None = 不經過優先權閘門
+    # 2026-10 第二階段新增：job 做完後 lane 再多佔住幾秒（秒數）；None = 不保留。只對有 lane 的 job 有意義。
+    hold: Optional[float] = None
 
     @property
     def summary(self) -> str:
@@ -163,8 +225,11 @@ def parse_sched(text: str) -> Optional[Union[ScheduledJob, SchedControl]]:
     interval = (0.0, 0.0)
     at_time = None
     alias_name = None
+    lane = None
+    pri = None
+    hold = None
     consumed = 0
-    modifier_keys = {"delay", "at", "repeat", "interval", "alias"}
+    modifier_keys = {"delay", "at", "repeat", "interval", "alias", "lane", "pri", "hold"}
     # 判斷「漏打等號」時，縮寫（rep/int）跟全名都要能被抓到。
     modifier_words = modifier_keys | set(_KEY_ALIASES.keys())
 
@@ -184,7 +249,7 @@ def parse_sched(text: str) -> Optional[Union[ScheduledJob, SchedControl]]:
             # 含有 "="，但 key 不是保留字（或縮寫）之一，多半是打錯字（如 reapeat=3），
             # 直接報錯，不要靜默當成指令本體送出。
             raise SchedParseError(
-                f"不認得的參數「{key}」，可用的是 delay/at/repeat(rep)/interval(int)/alias。\n{SCHED_USAGE}"
+                f"不認得的參數「{key}」，可用的是 delay/at/repeat(rep)/interval(int)/alias/lane/pri/hold。\n{SCHED_USAGE}"
             )
         if key == "delay":
             delay_seconds = parse_duration(value)
@@ -199,7 +264,19 @@ def parse_sched(text: str) -> Optional[Union[ScheduledJob, SchedControl]]:
             interval = parse_interval(value)
         elif key == "alias":
             alias_name = value
+        elif key == "lane":
+            if not value.strip():
+                raise SchedParseError(f"lane 不能是空的，應該寫成 lane=名稱。\n{SCHED_USAGE}")
+            lane = value.strip()
+        elif key == "pri":
+            pri = parse_priority(value)
+        elif key == "hold":
+            hold = parse_duration(value)
         consumed += 1
+
+    if hold is not None and lane is None:
+        # hold 是「lane 做完後多佔住幾秒」，沒有 lane 就沒有意義；直接報錯，不要靜默忽略。
+        raise SchedParseError(f"hold 必須搭配 lane=名稱 一起使用（沒有 lane 就沒有東西可以保留）。\n{SCHED_USAGE}")
 
     remaining = tokens[consumed:]
 
@@ -245,11 +322,126 @@ def parse_sched(text: str) -> Optional[Union[ScheduledJob, SchedControl]]:
         delay_seconds=delay_seconds,
         repeat=repeat,
         interval=interval,
+        lane=lane,
+        pri=pri,
+        hold=hold,
     )
 
 
 # job_id -> (ScheduledJob, asyncio.Task)
 _active_jobs: dict = {}
+# job_id -> 顯示用狀態字串（等待開始／等待 lane／執行中）。獨立一份，
+# 不去改 _active_jobs 的 (job, task) 二元組結構。
+_job_states: dict = {}
+# lane 名稱 -> _LaneQueue。沒寫 lane 的 job 完全不碰這個表。
+_lanes: dict = {}
+
+
+class _LaneQueue:
+    """lane 內「嚴格依下指令順序」排隊。
+
+    job 在 schedule() 時就登記進 order（下指令的順序），不是等 delay/at 睡完才
+    排隊——這樣第一個 job 還在等 at=00:00 時，後面沒寫 at= 的 job 也不會搶先跑。
+    輪到的條件只有一個：自己是 order 的第一個。job 結束（做完、失敗、被取消，
+    包含還沒開始就被取消）時由 leave() 移出，並喚醒下一個。
+
+    at=/delay= 只是「最早開始時間」，不會讓排在後面的 job 插隊，所以 lane 內的
+    順序就是下指令（或 plan 檔）的行順序。
+    """
+
+    def __init__(self):
+        self.order: list = []    # job_id，依下指令順序
+        self.waiting: dict = {}  # job_id -> Future，已睡完 delay、正在等輪到自己
+
+    def enter(self, job_id: str) -> None:
+        self.order.append(job_id)
+
+    def is_turn(self, job_id: str) -> bool:
+        return bool(self.order) and self.order[0] == job_id
+
+    async def wait_turn(self, job_id: str) -> None:
+        if self.is_turn(job_id):
+            return
+        fut = asyncio.get_running_loop().create_future()
+        self.waiting[job_id] = fut
+        await fut
+
+    def leave(self, job_id: str) -> None:
+        if job_id in self.order:
+            self.order.remove(job_id)
+        self.waiting.pop(job_id, None)
+        if self.order:
+            fut = self.waiting.get(self.order[0])
+            if fut is not None and not fut.done():
+                fut.set_result(None)
+
+
+def _lane_leave(job: ScheduledJob) -> None:
+    lane = _lanes.get(job.lane)
+    if lane is not None:
+        lane.leave(job.job_id)
+
+
+class _PriorityGate:
+    """單一名額 + 優先權 + 每次送出後的最小間隔。
+
+    只有帶 lane= 或 pri= 的 job 會經過這裡；其他 job 走原本的路徑，
+    不受任何影響。排序是 (優先權, 先來後到)。
+
+    同一瞬間到期的多個 job 會先全部排進佇列、下一輪事件迴圈才決定誰先
+    （call_soon），所以 pri=high 的可以贏過同一瞬間先被喚醒的 pri=low。
+    已經在送出中的不會被打斷。
+    """
+
+    def __init__(self, min_gap: float):
+        self._min_gap = min_gap
+        self._busy = False
+        self._heap: list = []  # (pri, seq, future)
+        self._seq = itertools.count()
+        self._last_release = float("-inf")
+
+    def _grant_next(self) -> None:
+        if self._busy:
+            return
+        while self._heap:
+            _, _, fut = heapq.heappop(self._heap)
+            if not fut.done():  # 已被取消的略過
+                self._busy = True
+                fut.set_result(None)
+                return
+
+    def _release(self) -> None:
+        self._busy = False
+        self._grant_next()
+
+    async def _wait_turn(self, pri: int) -> None:
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        heapq.heappush(self._heap, (pri, next(self._seq), fut))
+        if not self._busy:
+            loop.call_soon(self._grant_next)
+        try:
+            await fut
+        except asyncio.CancelledError:
+            # 剛好被授予名額、但在恢復執行前被取消：名額要還回去，否則閘門卡死。
+            if fut.done() and not fut.cancelled():
+                self._release()
+            raise
+
+    @asynccontextmanager
+    async def slot(self, pri: int):
+        await self._wait_turn(pri)
+        try:
+            gap = self._last_release + self._min_gap - time.monotonic()
+            if gap > 0:
+                await asyncio.sleep(gap)
+            yield
+        finally:
+            self._last_release = time.monotonic()
+            self._release()
+
+
+_gate = _PriorityGate(GATE_MIN_GAP_SECONDS)
 
 SendFn = Callable[..., Awaitable[dict]]
 ClickFn = Callable[..., Awaitable[dict]]
@@ -268,56 +460,89 @@ async def _run_step(step: str, job: "ScheduledJob", reason: str, send_fn: SendFn
         await send_fn(step, chat_id=job.chat_id, reason=reason)
 
 
-async def _run_job(job: ScheduledJob, send_fn: SendFn, click_fn: Optional[ClickFn] = None):
-    try:
-        if job.delay_seconds > 0:
-            print(f"[SCHED] {job.job_id} 將於 {job.delay_seconds:.1f} 秒後開始執行：{job.summary}")
-            await asyncio.sleep(job.delay_seconds)
+async def _run_segments(job: ScheduledJob, send_fn: SendFn, click_fn: Optional[ClickFn] = None):
+    """依序跑完 job.segments。這是原本 _run_job 在 delay 睡完之後的全部內容，
+    邏輯不變；唯一差別是帶 lane/pri 的 job 每次送出會先過優先權閘門。"""
+    gated = job.lane is not None or job.pri is not None
+    gate_pri = job.pri if job.pri is not None else PRI_NORMAL
 
-        total = sum(
-            len(steps) if kind == "once" else len(steps) * job.repeat
-            for kind, steps in job.segments
-        )
-        i = 0
+    total = sum(
+        len(steps) if kind == "once" else len(steps) * job.repeat
+        for kind, steps in job.segments
+    )
+    i = 0
 
-        async def _execute(step: str) -> bool:
-            """回傳 True 表示成功，False 表示失敗（呼叫端要中止剩餘步驟）。"""
-            nonlocal i
-            reason = f"{job.reason}（{i + 1}/{total}）" if job.reason else f"排程({job.job_id}) {i + 1}/{total}"
-            try:
+    async def _execute(step: str) -> bool:
+        """回傳 True 表示成功，False 表示失敗（呼叫端要中止剩餘步驟）。"""
+        nonlocal i
+        reason = f"{job.reason}（{i + 1}/{total}）" if job.reason else f"排程({job.job_id}) {i + 1}/{total}"
+        try:
+            if gated:
+                async with _gate.slot(gate_pri):
+                    await _run_step(step, job, reason, send_fn, click_fn)
+            else:
                 await _run_step(step, job, reason, send_fn, click_fn)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                # 某一步失敗（例如按鈕找不到）就停下來，不要盲目繼續跑剩下的步驟，
-                # 因為後續步驟很可能是建立在這一步成功的前提上。
-                print(f"[SCHED] {job.job_id} 執行「{step}」時發生錯誤：{e}，已中止剩餘步驟")
-                return False
-            i += 1
-            if i < total:
-                lo, hi = job.interval
-                wait = random.uniform(lo, hi) if hi > lo else lo
-                await asyncio.sleep(wait)
-            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # 某一步失敗（例如按鈕找不到）就停下來，不要盲目繼續跑剩下的步驟，
+            # 因為後續步驟很可能是建立在這一步成功的前提上。
+            print(f"[SCHED] {job.job_id} 執行「{step}」時發生錯誤：{e}，已中止剩餘步驟")
+            return False
+        i += 1
+        if i < total:
+            lo, hi = job.interval
+            wait = random.uniform(lo, hi) if hi > lo else lo
+            await asyncio.sleep(wait)
+        return True
 
-        # 依序跑過每個區塊："once" 固定跑一次，"repeat" 跑 job.repeat 輪。
-        # 這樣才能支援 once→repeat→once→... 任意交錯的順序，不再侷限
-        # 「所有 once 一定在所有 repeat 前面」。
-        for kind, steps in job.segments:
-            if kind == "once":
+    # 依序跑過每個區塊："once" 固定跑一次，"repeat" 跑 job.repeat 輪。
+    # 這樣才能支援 once→repeat→once→... 任意交錯的順序，不再侷限
+    # 「所有 once 一定在所有 repeat 前面」。
+    for kind, steps in job.segments:
+        if kind == "once":
+            for step in steps:
+                if not await _execute(step):
+                    return
+        else:  # kind == "repeat"
+            for r in range(job.repeat):
                 for step in steps:
                     if not await _execute(step):
                         return
-            else:  # kind == "repeat"
-                for r in range(job.repeat):
-                    for step in steps:
-                        if not await _execute(step):
-                            return
+
+
+async def _run_job(job: ScheduledJob, send_fn: SendFn, click_fn: Optional[ClickFn] = None):
+    try:
+        if job.delay_seconds > 0:
+            _job_states[job.job_id] = "等待開始"
+            print(f"[SCHED] {job.job_id} 將於 {job.delay_seconds:.1f} 秒後開始執行：{job.summary}")
+            await asyncio.sleep(job.delay_seconds)
+
+        # lane：嚴格依下指令順序，輪到自己（order 第一個）才開始。at=/delay= 睡完
+        # 只代表「可以開始了」，前面還有 job 沒做完就繼續等。離開 lane 由
+        # schedule() 掛的 done callback 負責（涵蓋「還沒開始就被取消」的情況）。
+        # 沒寫 lane 的完全跳過這一段。
+        if job.lane is not None:
+            lane = _lanes[job.lane]
+            if not lane.is_turn(job.job_id):
+                _job_states[job.job_id] = f"等待 lane={job.lane}"
+                print(f"[SCHED] {job.job_id} 在 lane「{job.lane}」排隊中，前面的排程做完才會開始")
+            await lane.wait_turn(job.job_id)
+
+        _job_states[job.job_id] = "執行中"
+        await _run_segments(job, send_fn, click_fn)
+
+        # hold：做完後 lane 再多佔住幾秒。這個 job 還在 order 第一個、task 還活著，
+        # 所以後面的 job 自然會繼續等；被取消時 sleep 會中斷，lane 立刻釋放。
+        if job.hold and job.lane is not None:
+            _job_states[job.job_id] = f"保留 lane 中（{job.hold:g} 秒）"
+            await asyncio.sleep(job.hold)
     except asyncio.CancelledError:
         print(f"[SCHED] {job.job_id} 已被取消")
         raise
     finally:
         _active_jobs.pop(job.job_id, None)
+        _job_states.pop(job.job_id, None)
 
 
 def schedule(job: ScheduledJob, send_fn: Optional[SendFn] = None, click_fn: Optional[ClickFn] = None) -> str:
@@ -326,7 +551,14 @@ def schedule(job: ScheduledJob, send_fn: Optional[SendFn] = None, click_fn: Opti
     只有測試或需要換掉實際送出方式時才需要自己傳。"""
     send_fn = send_fn or executor.send_now
     click_fn = click_fn or executor.click_button_by_text
+    if job.lane is not None:
+        # 在這裡（下指令的當下）登記順序，不是等 job 開始跑才登記。
+        _lanes.setdefault(job.lane, _LaneQueue()).enter(job.job_id)
     task = asyncio.create_task(_run_job(job, send_fn, click_fn))
+    if job.lane is not None:
+        # 不管做完、失敗、被取消（含還沒開始跑就被取消）都要離開 lane，
+        # 不然排在後面的 job 會永遠等下去。
+        task.add_done_callback(lambda _t, j=job: _lane_leave(j))
     _active_jobs[job.job_id] = (job, task)
     return job.job_id
 
@@ -334,7 +566,8 @@ def schedule(job: ScheduledJob, send_fn: Optional[SendFn] = None, click_fn: Opti
 def list_jobs():
     """回傳目前所有進行中任務的簡要資訊，供 /sched list 使用。"""
     return [
-        {"job_id": jid, "command": j.summary, "repeat": j.repeat}
+        {"job_id": jid, "command": j.summary, "repeat": j.repeat,
+         "lane": j.lane, "pri": j.pri, "hold": j.hold, "state": _job_states.get(jid, "")}
         for jid, (j, _) in _active_jobs.items()
     ]
 
@@ -387,14 +620,30 @@ async def handle_command(text, base_dir, account_id):
                 print("[SCHED] 目前沒有進行中的排程")
             else:
                 for j in jobs:
-                    print(f"  {j['job_id']} ｜ {j['command']} ｜ repeat={j['repeat']}")
+                    extra = ""
+                    if j.get("lane") is not None:
+                        extra += f" ｜ lane={j['lane']}"
+                    if j.get("pri") is not None:
+                        extra += f" ｜ pri={_pri_label(j['pri'])}"
+                    if j.get("hold"):
+                        extra += f" ｜ hold={j['hold']:g}s"
+                    if j.get("state"):
+                        extra += f" ｜ {j['state']}"
+                    print(f"  {j['job_id']} ｜ {j['command']} ｜ repeat={j['repeat']}{extra}")
         elif parsed.action == "cancel":
             ok = cancel(parsed.target)
             print(f"[SCHED] 已取消 {parsed.target}" if ok else f"[SCHED] 找不到 {parsed.target}")
     else:
         job_id = schedule(parsed)
+        extra = ""
+        if parsed.lane is not None:
+            extra += f", lane={parsed.lane}"
+        if parsed.pri is not None:
+            extra += f", pri={_pri_label(parsed.pri)}"
+        if parsed.hold:
+            extra += f", hold={parsed.hold:g}s"
         print(f"[SCHED] 已排程 {job_id}：{parsed.summary}"
-              f"（delay={parsed.delay_seconds:.0f}s, repeat={parsed.repeat}）")
+              f"（delay={parsed.delay_seconds:.0f}s, repeat={parsed.repeat}{extra}）")
 
 
 async def handle_alias_command(text, base_dir, account_id):
@@ -431,3 +680,159 @@ async def handle_alias_command(text, base_dir, account_id):
     job_id = schedule(parsed)
     print(f"[SCHED] 已排程 {job_id}：{parsed.summary}"
           f"（delay={parsed.delay_seconds:.0f}s, repeat={parsed.repeat}）")
+
+# ==================== /plan：一組 /sched 行的集合 ====================
+# 2026-10：plan 檔的讀取在 plans.py（比照 aliases.py）；這裡負責「逐行解析 +
+# 展開成 job」，因為解析跟排程本來就是這支檔案的事，放這裡 plans.py 才不用
+# import scheduler（避免循環依賴）。
+
+# plan 名稱 -> 該 plan 展開出來的 job_id 清單。獨立一份，不新增 ScheduledJob
+# 欄位；/plan stop 只取消這份清單裡的 job。
+_plan_jobs: dict = {}
+
+_PLAN_USAGE = (
+    "/plan 用法：\n"
+    "  /plan list              → 列出這個帳號的 plan\n"
+    "  /plan show 名稱         → 只檢查、顯示每一行（不排程）\n"
+    "  /plan load 名稱         → 載入：整份驗證通過才會全部排程，有任何一行錯就一個都不載入\n"
+    "  /plan stop 名稱         → 取消這個 plan 展開的排程（不影響其他排程）\n"
+    "  /plan stop all          → 取消所有 plan 展開的排程\n"
+    "  （plan 檔放在 data/{帳號ID}/plans/名稱.plan，每行一條 /sched 語法，# 開頭是註解；\n"
+    "   　重複載入同一個 plan 會先取消舊的再載入，不會疊成兩份；at= 的時間若已過會排到明天）"
+)
+
+
+def _fmt_wait(seconds: float) -> str:
+    """顯示用：距離開始還有多久。載入 plan 時印出來，at= 時間已過而滾到明天的
+    情況一眼就看得出來。"""
+    if seconds < 1:
+        return "立即開始"
+    if seconds < 60:
+        return f"約 {int(seconds)} 秒後開始"
+    minutes = int(round(seconds / 60))
+    if minutes < 60:
+        return f"約 {minutes} 分鐘後開始"
+    return f"約 {minutes // 60} 小時 {minutes % 60} 分後開始"
+
+
+def _parse_plan(base_dir, account_id, name):
+    """讀檔並逐行解析，回傳 [(行號, 原文, ScheduledJob 或 None, 錯誤訊息或 None), ...]。
+    plans.PlanError（找不到檔、名稱不合法、空檔案）直接往上丟，由呼叫端印出。"""
+    results = []
+    for line_no, line in plans.read_plan(base_dir, account_id, name):
+        try:
+            parsed = parse_sched(line)
+        except SchedParseError as e:
+            results.append((line_no, line, None, str(e).split("\n")[0]))
+            continue
+        if not isinstance(parsed, ScheduledJob):
+            results.append((line_no, line, None, "plan 內只能放 /sched 排程行（不能是 list / cancel / stop 或其他指令）"))
+            continue
+        results.append((line_no, line, parsed, None))
+    return results
+
+
+def _job_extras(job: ScheduledJob) -> str:
+    extra = ""
+    if job.lane is not None:
+        extra += f" ｜ lane={job.lane}"
+    if job.pri is not None:
+        extra += f" ｜ pri={_pri_label(job.pri)}"
+    if job.hold:
+        extra += f" ｜ hold={job.hold:g}s"
+    return extra
+
+
+def _stop_plan(name: str) -> int:
+    """取消某個 plan 展開出來、還在進行中的 job，回傳實際取消的數量。"""
+    return sum(1 for jid in _plan_jobs.pop(name, []) if cancel(jid))
+
+
+async def handle_plan_command(text, base_dir, account_id):
+    """/plan 終端機指令的統一入口（登記進 main.py 的 TERMINAL_COMMANDS）。"""
+    tokens = text.split()
+    if not tokens or tokens[0] != "/plan":
+        print(f"[錯誤] 不認得的指令「{text}」，開頭 / 的訊息不會被送出。\n{_PLAN_USAGE}")
+        return
+    if account_id is None:
+        print("[錯誤] 還沒取得帳號 ID（尚未連線完成），無法讀取這個帳號的 plan")
+        return
+    if len(tokens) == 1:
+        print(_PLAN_USAGE)
+        return
+
+    sub_cmd = tokens[1].lower()
+
+    if sub_cmd == "list" and len(tokens) == 2:
+        names = plans.list_plans(base_dir, account_id)
+        if not names:
+            print(f"[PLAN] 目前沒有任何 plan（把 .plan 檔放在 {plans.plans_dir(base_dir, account_id)}）")
+            return
+        for n in names:
+            suffix = ""
+            if n in _plan_jobs:
+                running = sum(1 for jid in _plan_jobs[n] if jid in _active_jobs)
+                suffix = f" ｜ 已載入，{running} 個排程進行中" if running else " ｜ 已載入，排程都已結束"
+            print(f"  {n}{suffix}")
+        return
+
+    if sub_cmd == "stop" and len(tokens) == 3 and tokens[2].lower() == "all":
+        total = sum(_stop_plan(n) for n in list(_plan_jobs))
+        print(f"[PLAN] 已取消所有 plan 的排程（共 {total} 個進行中）")
+        return
+
+    if sub_cmd in ("show", "load", "stop") and len(tokens) == 3:
+        name = tokens[2]
+        try:
+            name = plans.normalize_name(name)
+        except plans.PlanError as e:
+            print(f"[錯誤] {e}")
+            return
+
+        if sub_cmd == "stop":
+            if name not in _plan_jobs:
+                print(f"[PLAN] plan「{name}」目前沒有載入")
+                return
+            print(f"[PLAN] 已取消 plan「{name}」的 {_stop_plan(name)} 個進行中的排程")
+            return
+
+        try:
+            results = _parse_plan(base_dir, account_id, name)
+        except plans.PlanError as e:
+            print(f"[錯誤] {e}")
+            return
+
+        errors = [(n, err) for n, _, job, err in results if job is None]
+
+        if sub_cmd == "show":
+            for line_no, line, job, err in results:
+                if job is None:
+                    print(f"  第 {line_no} 行 ❌ {err}\n         {line}")
+                else:
+                    print(f"  第 {line_no} 行 ✅ {_fmt_wait(job.delay_seconds)}{_job_extras(job)}\n         {line}")
+            print(f"[PLAN] plan「{name}」共 {len(results)} 行，"
+                  + (f"{len(errors)} 行有問題" if errors else "全部通過檢查"))
+            return
+
+        # load：整份驗證通過才排程，有任何一行錯就一個都不載入。
+        if errors:
+            print(f"[PLAN] plan「{name}」有 {len(errors)} 行有問題，整份都沒有載入：")
+            for line_no, err in errors:
+                print(f"  第 {line_no} 行：{err}")
+            return
+
+        replaced = _stop_plan(name)
+        if replaced:
+            print(f"[PLAN] plan「{name}」原本已載入，先取消舊的 {replaced} 個排程再重新載入")
+
+        job_ids = []
+        for line_no, line, job, _ in results:
+            job.reason = f"plan {name} ({job.job_id})"
+            schedule(job)
+            job_ids.append(job.job_id)
+            print(f"  {job.job_id} ｜ {job.summary} ｜ {_fmt_wait(job.delay_seconds)}{_job_extras(job)}")
+        _plan_jobs[name] = job_ids
+        print(f"[PLAN] ✅ 已載入 plan「{name}」：{len(job_ids)} 個排程")
+        return
+
+    print(f"[錯誤] /plan 用法不對。\n{_PLAN_USAGE}")
