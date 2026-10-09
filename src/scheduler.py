@@ -19,6 +19,10 @@ segments: List[Tuple[str, List[str]]]——每個區塊是 ("once"|"repeat", 步
     所以 lane 內的順序就是下指令（或 plan 檔）的行順序，要按時間先後就照時間排。
   - hold=時間（只能搭配 lane=）：這個 job 全部做完後，lane 再多佔住這麼久才輪到下一個，
     例如 hold=20s。整個 job 只算一次（不是每一輪 repeat 都停）。可用 /sched cancel 取消。
+  - offlineat=HH:MM：離線排程。下指令的當下（程式必須在線）就把整串訊息「編譯」成
+    「幾點幾分送什麼」，一則一則交給 Telegram 伺服器排程（executor.send_scheduled）；
+    交出去之後本機斷線也會照送。Telegram 排程只精確到分鐘，所以間隔至少 1 分鐘；
+    只能是文字指令（不能 click:）；不能跟 at/delay/lane/pri/hold 一起用。
   - pri=high|normal|low（或整數，越小越優先）：多個排程在同一瞬間都要送出時，
     由單一閘門依優先權決定誰先；閘門在每次送出之間強制隔 GATE_MIN_GAP_SECONDS。
   - 沒寫 lane 也沒寫 pri 的排程完全不經過鎖與閘門，行為跟改版前一致。
@@ -52,6 +56,17 @@ MIN_INTERVAL_SECONDS = 0.1
 # repeat > 1 但沒指定 interval 時使用的預設間隔（跟上面的下限是兩件事，各自可調）。
 DEFAULT_INTERVAL_SECONDS = 2.0
 
+# 離線排程（offlineat=）：伺服器端排程訊息的限制。
+# 每個對話的排程訊息數量上限，印象中約 100 則——這個數字沒有實測過，請在真環境確認
+# 後再調整。超過就整個拒絕，不會送一半。
+OFFLINE_MAX_MESSAGES = 100
+# Telegram 排程只精確到分鐘，間隔不到 1 分鐘沒有意義。
+OFFLINE_MIN_INTERVAL_SECONDS = 60.0
+# 起點離現在不到這麼久就排到明天（避免「已經過了」或「來不及」被 Telegram 拒絕）。
+OFFLINE_MIN_LEAD_SECONDS = 60.0
+# 連續提交給 Telegram 時，每則之間的小停頓（秒），避免一次丟太快觸發流量限制。
+OFFLINE_SUBMIT_PAUSE_SECONDS = 0.3
+
 # 優先權：數字越小越優先。pri= 可以寫名稱或整數。
 _PRI_NAMES = {"high": 0, "normal": 1, "low": 2}
 PRI_NORMAL = 1
@@ -76,6 +91,8 @@ SCHED_USAGE = (
     "   　多指令、rep>1 或使用 alias 沒給 int 時會套用預設間隔）\n"
     "  （查詢有哪些 alias 可用，改用 /alias list，不透過 /sched）\n"
     "  /sched lane=npc int=10s cmd1;cmd2       → 同一個 lane 的排程嚴格依下指令順序執行（前一個做完才輪到下一個），不同 lane 互相交錯\n"
+    "  /sched offlineat=08:00 rep=3 int=5m 簽到 → 離線排程：現在就交給 Telegram 伺服器，之後斷線也會從 08:00 起送出\n"
+    "                                           （只精確到分鐘、間隔至少 1m、只能文字指令，不能搭配 at/delay/lane/pri/hold）\n"
     "  /sched lane=npc hold=20s 指令           → 這個排程做完後，lane 再保留 20 秒才輪到下一個（只能搭配 lane=）\n"
     "  /sched pri=high 指令內容                → 優先權 high/normal/low（或整數，越小越優先），\n"
     "                                           多個排程同一瞬間都要送出時誰先；low 會讓路\n"
@@ -137,6 +154,17 @@ def _pri_label(pri: int) -> str:
     return str(pri)
 
 
+def _parse_hhmm(hhmm: str) -> Tuple[int, int]:
+    """驗證並拆開 HH:MM；不合法丟 SchedParseError。"""
+    try:
+        hh, mm = map(int, hhmm.strip().split(":"))
+    except ValueError:
+        raise SchedParseError(f"無法解析時間點：{hhmm}，格式需為 HH:MM")
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        raise SchedParseError(f"時間點超出範圍：{hhmm}，小時 0~23、分鐘 0~59")
+    return hh, mm
+
+
 def _seconds_until(hhmm: str) -> float:
     now = datetime.now()
     try:
@@ -169,6 +197,9 @@ class ScheduledJob:
     pri: Optional[int] = None  # 同一瞬間誰先送；None = 不經過優先權閘門
     # 2026-10 第二階段新增：job 做完後 lane 再多佔住幾秒（秒數）；None = 不保留。只對有 lane 的 job 有意義。
     hold: Optional[float] = None
+    # 2026-10 離線排程："HH:MM"；有值代表這個 job 不在本機計時，而是下指令當下就整批
+    # 交給 Telegram 伺服器排程（見 compile_offline / _run_offline_job）。None = 一般本機排程。
+    offline_at: Optional[str] = None
 
     @property
     def summary(self) -> str:
@@ -228,8 +259,10 @@ def parse_sched(text: str) -> Optional[Union[ScheduledJob, SchedControl]]:
     lane = None
     pri = None
     hold = None
+    offline_at = None
+    given = set()
     consumed = 0
-    modifier_keys = {"delay", "at", "repeat", "interval", "alias", "lane", "pri", "hold"}
+    modifier_keys = {"delay", "at", "repeat", "interval", "alias", "lane", "pri", "hold", "offlineat"}
     # 判斷「漏打等號」時，縮寫（rep/int）跟全名都要能被抓到。
     modifier_words = modifier_keys | set(_KEY_ALIASES.keys())
 
@@ -249,8 +282,9 @@ def parse_sched(text: str) -> Optional[Union[ScheduledJob, SchedControl]]:
             # 含有 "="，但 key 不是保留字（或縮寫）之一，多半是打錯字（如 reapeat=3），
             # 直接報錯，不要靜默當成指令本體送出。
             raise SchedParseError(
-                f"不認得的參數「{key}」，可用的是 delay/at/repeat(rep)/interval(int)/alias/lane/pri/hold。\n{SCHED_USAGE}"
+                f"不認得的參數「{key}」，可用的是 delay/at/repeat(rep)/interval(int)/alias/lane/pri/hold/offlineat。\n{SCHED_USAGE}"
             )
+        given.add(key)
         if key == "delay":
             delay_seconds = parse_duration(value)
         elif key == "at":
@@ -272,11 +306,22 @@ def parse_sched(text: str) -> Optional[Union[ScheduledJob, SchedControl]]:
             pri = parse_priority(value)
         elif key == "hold":
             hold = parse_duration(value)
+        elif key == "offlineat":
+            _parse_hhmm(value)  # 先驗證格式，不合法直接報錯
+            offline_at = value.strip()
         consumed += 1
 
     if hold is not None and lane is None:
         # hold 是「lane 做完後多佔住幾秒」，沒有 lane 就沒有意義；直接報錯，不要靜默忽略。
         raise SchedParseError(f"hold 必須搭配 lane=名稱 一起使用（沒有 lane 就沒有東西可以保留）。\n{SCHED_USAGE}")
+
+    if offline_at is not None:
+        conflicts = sorted(given & {"delay", "at", "lane", "pri", "hold"})
+        if conflicts:
+            raise SchedParseError(
+                f"offlineat 不能和 {'、'.join(conflicts)} 一起用：離線排程的送出時間在下指令當下就全部算好、"
+                f"交給 Telegram，之後本機管不到。\n{SCHED_USAGE}"
+            )
 
     remaining = tokens[consumed:]
 
@@ -306,7 +351,21 @@ def parse_sched(text: str) -> Optional[Union[ScheduledJob, SchedControl]]:
         len(steps) if kind == "once" else len(steps) * repeat
         for kind, steps in segments
     )
-    if total_runs > 1:
+    if offline_at is not None:
+        if any(step.lower().startswith(_CLICK_PREFIX) for _, steps in segments for step in steps):
+            raise SchedParseError("離線排程只能是文字指令，不能含 click: 按鈕步驟（伺服器端排程不能點按鈕）。")
+        if total_runs > OFFLINE_MAX_MESSAGES:
+            raise SchedParseError(
+                f"離線排程一共會有 {total_runs} 則訊息，超過上限 {OFFLINE_MAX_MESSAGES} 則（整個拒絕，不會送一半）。"
+                "太長的流程請改用一般的本機排程。"
+            )
+        if total_runs > 1:
+            if interval == (0.0, 0.0):
+                raise SchedParseError("離線排程有多則訊息時必須指定間隔，至少 1 分鐘，例如 int=5m 或 int=10m-12m。")
+            if min(interval) < OFFLINE_MIN_INTERVAL_SECONDS:
+                raise SchedParseError("離線排程的間隔至少 1 分鐘（Telegram 排程只精確到分鐘），例如 int=1m。")
+
+    if offline_at is None and total_runs > 1:
         if interval == (0.0, 0.0):
             interval = (DEFAULT_INTERVAL_SECONDS, DEFAULT_INTERVAL_SECONDS)
             print(f"[SCHED] 未指定 interval，套用預設間隔 {DEFAULT_INTERVAL_SECONDS:.1f}s")
@@ -325,7 +384,71 @@ def parse_sched(text: str) -> Optional[Union[ScheduledJob, SchedControl]]:
         lane=lane,
         pri=pri,
         hold=hold,
+        offline_at=offline_at,
     )
+
+
+def compile_offline(job: ScheduledJob, now: Optional[datetime] = None, rng=random) -> List[Tuple[datetime, str]]:
+    """把離線 job「編譯」成 [(送出時間, 文字), ...]（時間都是整分鐘、有時區）。
+
+    - 起點：offline_at 的下一次出現；離現在不到 OFFLINE_MIN_LEAD_SECONDS 就排到明天。
+    - 步驟順序跟本機排程完全一致（once 區塊 1 次、repeat 區塊 × repeat 輪）。
+    - 間隔在 interval 區間內隨機抽（一次全部抽好），累計後四捨五入到整分鐘；
+      因為間隔 >= 1 分鐘，取整後相鄰兩則一定至少差 1 分鐘、順序不會亂。
+    純函式（now / rng 可注入），方便測試跟 /plan show 預覽。
+    """
+    now = now or datetime.now().astimezone()
+    hh, mm = _parse_hhmm(job.offline_at)
+    start = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if (start - now).total_seconds() < OFFLINE_MIN_LEAD_SECONDS:
+        start += timedelta(days=1)
+
+    texts: List[str] = []
+    for kind, steps in job.segments:
+        rounds = 1 if kind == "once" else job.repeat
+        for _ in range(rounds):
+            texts.extend(steps)
+
+    lo, hi = job.interval
+    plan: List[Tuple[datetime, str]] = []
+    offset = 0.0
+    for i, text in enumerate(texts):
+        if i > 0:
+            offset += rng.uniform(lo, hi) if hi > lo else lo
+        plan.append((start + timedelta(minutes=round(offset / 60)), text))
+    return plan
+
+
+async def _run_offline_job(job: ScheduledJob, offline_fn):
+    """編譯並把整串訊息一則一則交給 Telegram。這個 task 只活到「全部交出去」為止，
+    之後的送出完全由 Telegram 伺服器負責（本機斷線也照送）。
+
+    中途失敗：前面已經交出去的沒辦法自動收回（要用 Telegram 的「排程訊息」清單手動刪，
+    或 /offline list 先看），所以失敗訊息會明確說出已經排了幾則。"""
+    plan: List[Tuple[datetime, str]] = []
+    done = 0
+    try:
+        plan = compile_offline(job)
+        _job_states[job.job_id] = "提交離線排程中"
+        print(f"[SCHED] {job.job_id} 離線排程：共 {len(plan)} 則，"
+              f"{plan[0][0]:%m/%d %H:%M} ～ {plan[-1][0]:%m/%d %H:%M}，開始交給 Telegram…")
+        for run_at, text in plan:
+            reason = job.reason or f"離線排程({job.job_id}) {done + 1}/{len(plan)}"
+            await offline_fn(text, run_at, chat_id=job.chat_id, reason=reason)
+            done += 1
+            if done < len(plan):
+                await asyncio.sleep(OFFLINE_SUBMIT_PAUSE_SECONDS)
+        print(f"[SCHED] ✅ {job.job_id} 離線排程已全部交給 Telegram（{done} 則）。"
+              "之後斷線也會照送；要查看或取消請到 Telegram 對話的「排程訊息」清單，或用 /offline list")
+    except asyncio.CancelledError:
+        print(f"[SCHED] {job.job_id} 離線排程提交被取消，已交給 Telegram 的有 {done}/{len(plan)} 則（不會自動收回）")
+        raise
+    except Exception as e:
+        print(f"[SCHED] ❌ {job.job_id} 離線排程提交到第 {done + 1}/{len(plan) or '?'} 則時失敗：{e}。"
+              f"前 {done} 則已經排在 Telegram 上了，需要的話請到「排程訊息」清單手動刪除")
+    finally:
+        _active_jobs.pop(job.job_id, None)
+        _job_states.pop(job.job_id, None)
 
 
 # job_id -> (ScheduledJob, asyncio.Task)
@@ -545,10 +668,17 @@ async def _run_job(job: ScheduledJob, send_fn: SendFn, click_fn: Optional[ClickF
         _job_states.pop(job.job_id, None)
 
 
-def schedule(job: ScheduledJob, send_fn: Optional[SendFn] = None, click_fn: Optional[ClickFn] = None) -> str:
+def schedule(job: ScheduledJob, send_fn: Optional[SendFn] = None, click_fn: Optional[ClickFn] = None,
+             offline_fn: Optional[Callable[..., Awaitable[dict]]] = None) -> str:
     """建立排程任務並回傳 job_id，不會阻塞呼叫端。
     send_fn/click_fn 不給的話，預設用 executor.send_now / executor.click_button_by_text，
     只有測試或需要換掉實際送出方式時才需要自己傳。"""
+    if job.offline_at is not None:
+        # 離線排程不在本機計時：整批編譯後交給 Telegram，task 只活到全部交出去為止。
+        offline_fn = offline_fn or executor.send_scheduled
+        task = asyncio.create_task(_run_offline_job(job, offline_fn))
+        _active_jobs[job.job_id] = (job, task)
+        return job.job_id
     send_fn = send_fn or executor.send_now
     click_fn = click_fn or executor.click_button_by_text
     if job.lane is not None:
@@ -567,7 +697,7 @@ def list_jobs():
     """回傳目前所有進行中任務的簡要資訊，供 /sched list 使用。"""
     return [
         {"job_id": jid, "command": j.summary, "repeat": j.repeat,
-         "lane": j.lane, "pri": j.pri, "hold": j.hold, "state": _job_states.get(jid, "")}
+         "lane": j.lane, "pri": j.pri, "hold": j.hold, "offline_at": j.offline_at, "state": _job_states.get(jid, "")}
         for jid, (j, _) in _active_jobs.items()
     ]
 
@@ -627,6 +757,8 @@ async def handle_command(text, base_dir, account_id):
                         extra += f" ｜ pri={_pri_label(j['pri'])}"
                     if j.get("hold"):
                         extra += f" ｜ hold={j['hold']:g}s"
+                    if j.get("offline_at"):
+                        extra += f" ｜ offlineat={j['offline_at']}"
                     if j.get("state"):
                         extra += f" ｜ {j['state']}"
                     print(f"  {j['job_id']} ｜ {j['command']} ｜ repeat={j['repeat']}{extra}")
@@ -642,6 +774,8 @@ async def handle_command(text, base_dir, account_id):
             extra += f", pri={_pri_label(parsed.pri)}"
         if parsed.hold:
             extra += f", hold={parsed.hold:g}s"
+        if parsed.offline_at:
+            extra += f", offlineat={parsed.offline_at}"
         print(f"[SCHED] 已排程 {job_id}：{parsed.summary}"
               f"（delay={parsed.delay_seconds:.0f}s, repeat={parsed.repeat}{extra}）")
 
@@ -732,6 +866,16 @@ def _parse_plan(base_dir, account_id, name):
     return results
 
 
+def _describe_start(job: ScheduledJob) -> str:
+    """plan show/load 顯示用：一般 job 顯示「多久後開始」；離線 job 顯示編譯預覽
+    （幾則、哪個時段；間隔是隨機的，實際送出時會重新抽，所以時間只是預覽）。"""
+    if job.offline_at is None:
+        return _fmt_wait(job.delay_seconds)
+    plan = compile_offline(job)
+    return (f"離線排程：共 {len(plan)} 則，{plan[0][0]:%m/%d %H:%M} ～ {plan[-1][0]:%m/%d %H:%M}"
+            "（間隔隨機，實際時間以交出時為準）")
+
+
 def _job_extras(job: ScheduledJob) -> str:
     extra = ""
     if job.lane is not None:
@@ -740,6 +884,8 @@ def _job_extras(job: ScheduledJob) -> str:
         extra += f" ｜ pri={_pri_label(job.pri)}"
     if job.hold:
         extra += f" ｜ hold={job.hold:g}s"
+    if job.offline_at:
+        extra += f" ｜ offlineat={job.offline_at}"
     return extra
 
 
@@ -809,7 +955,7 @@ async def handle_plan_command(text, base_dir, account_id):
                 if job is None:
                     print(f"  第 {line_no} 行 ❌ {err}\n         {line}")
                 else:
-                    print(f"  第 {line_no} 行 ✅ {_fmt_wait(job.delay_seconds)}{_job_extras(job)}\n         {line}")
+                    print(f"  第 {line_no} 行 ✅ {_describe_start(job)}{_job_extras(job)}\n         {line}")
             print(f"[PLAN] plan「{name}」共 {len(results)} 行，"
                   + (f"{len(errors)} 行有問題" if errors else "全部通過檢查"))
             return
@@ -830,7 +976,7 @@ async def handle_plan_command(text, base_dir, account_id):
             job.reason = f"plan {name} ({job.job_id})"
             schedule(job)
             job_ids.append(job.job_id)
-            print(f"  {job.job_id} ｜ {job.summary} ｜ {_fmt_wait(job.delay_seconds)}{_job_extras(job)}")
+            print(f"  {job.job_id} ｜ {job.summary} ｜ {_describe_start(job)}{_job_extras(job)}")
         _plan_jobs[name] = job_ids
         print(f"[PLAN] ✅ 已載入 plan「{name}」：{len(job_ids)} 個排程")
         return

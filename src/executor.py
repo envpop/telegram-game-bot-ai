@@ -12,6 +12,8 @@ executor.py —— 輸出層
   send_sequence(commands, interval)       依序送出多筆指令，中間間隔幾秒
   schedule_at(run_at, text)               排定在指定時間送出一次
   schedule_every(interval_seconds, text)  建立固定週期重複送出的背景任務
+  send_scheduled(text, run_at)            交給 Telegram 伺服器排程（離線也會送出，只精確到分鐘）
+  list_scheduled()                        讀回目前還在 Telegram 上排程中的訊息
 
 所有送出的動作都會記錄到 logs/{日期}/actions_sent.jsonl，方便之後稽核
 「BOT 到底做過什麼」，跟 monitor 記錄「觀察到什麼」的 raw log 分開存放。
@@ -256,6 +258,50 @@ def schedule_every(interval_seconds, text, chat_id=None, reason=None):
 
     return asyncio.create_task(_loop())
 
+async def send_scheduled(text, run_at, chat_id=None, reason=None):
+    """把一則文字訊息交給 Telegram 伺服器排程（server-side scheduled message）：
+    交出去之後本機斷線也會在 run_at 送出。2026-10 新增，給 scheduler 的 offlineat= 用。
+
+    run_at: datetime，沒有 tzinfo 視為 LOCAL_TZ（UTC+8）。Telegram 排程在 App 裡只能選到
+    分鐘，所以呼叫端（scheduler.compile_offline）一律傳整分鐘。
+    只能是文字訊息；按鈕點擊沒辦法排程。
+
+    這裡刻意「不」呼叫 mark_as_self_sent：回傳的 message.id 是排程訊息自己的 id，
+    不是真正送達後的訊息 id（送達時會是一則新訊息、新 id）。登記它沒有用，還可能讓
+    某則剛好同 id 的真實訊息被誤判成「自己送的」而被 main.py 的 on_record 略過。
+    真正送達的那一則會被 monitor 當成「本人從別的裝置送出的訊息」處理，跟用手機直接
+    打指令是同一條路徑。
+    """
+    target_chat_id = chat_id or DEFAULT_COMMAND_CHAT_ID
+    if run_at.tzinfo is None:
+        run_at = run_at.replace(tzinfo=LOCAL_TZ)
+
+    scheduled_message = await client.send_message(target_chat_id, text, schedule=run_at)
+
+    record = {
+        "sent_at": _now_local(),
+        "chat_id": target_chat_id,
+        "chat_name": CHAT_NAMES.get(target_chat_id, str(target_chat_id)),
+        "action": "send_scheduled",
+        "scheduled_for": run_at.astimezone(LOCAL_TZ).isoformat(timespec="seconds"),
+        "scheduled_message_id": getattr(scheduled_message, "id", None),
+        "text": text,
+        "reason": reason,
+    }
+    _log_action(record)
+
+    print(f"[SCHEDULED] → {record['chat_name']}：{text}"
+          f"（預定 {run_at.astimezone(LOCAL_TZ):%m/%d %H:%M} 送出）" + (f"（原因：{reason}）" if reason else ""))
+    return record
+
+
+async def list_scheduled(chat_id=None):
+    """回傳目前還在 Telegram 上排程中的訊息（Telethon Message 清單）。
+    直接問 Telegram，所以在 App 裡手動刪掉的也會反映出來。"""
+    target_chat_id = chat_id or DEFAULT_COMMAND_CHAT_ID
+    return list(await client.get_messages(target_chat_id, limit=None, scheduled=True))
+
+
 # ============================================================
 # 終端機指令：/delay、/click
 # ============================================================
@@ -327,3 +373,28 @@ async def handle_click_command(text, base_dir, account_id):
         await click_button_by_text(spec, reason="手動輸入(終端機)/click")
     except ValueError as e:
         print(f"[錯誤] {e}")
+
+_OFFLINE_USAGE = ("[錯誤] /offline 用法：\n"
+                  "  /offline list    列出目前還在 Telegram 上排程中的訊息\n"
+                  "  （取消請先到 Telegram 對話的「排程訊息」清單手動刪除）")
+
+
+async def handle_offline_command(text, base_dir, account_id):
+    """離線排程（伺服器端排程訊息）的查看指令，目前只有唯讀的 list。"""
+    tokens = text.split()
+    if len(tokens) != 2 or tokens[0] != "/offline" or tokens[1].lower() != "list":
+        print(_OFFLINE_USAGE)
+        return
+    try:
+        items = await list_scheduled()
+    except Exception as e:
+        print(f"[錯誤] 讀取排程訊息失敗：{e}（可以直接在 Telegram 對話的「排程訊息」清單查看）")
+        return
+    if not items:
+        print("[OFFLINE] 目前沒有排程中的訊息")
+        return
+    print(f"[OFFLINE] 排程中的訊息共 {len(items)} 則：")
+    for m in sorted(items, key=lambda m: m.date):
+        when = m.date.astimezone(LOCAL_TZ).strftime("%m/%d %H:%M")
+        preview = (m.text or "").replace("\n", " ")
+        print(f"  {when} ｜ id {m.id} ｜ {preview[:40]}")
