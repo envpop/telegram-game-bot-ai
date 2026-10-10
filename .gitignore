@@ -15,6 +15,7 @@ logs/
 # 環境變數（敏感資訊）
 .env
 credentials.json
+config/accounts.py
 
 # IDE
 .vscode/
