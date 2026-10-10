@@ -24,7 +24,11 @@ from action_dispatcher import ActionDispatcher
 from strategy_pipeline import StrategyPipeline
 from strategies.query_advisor_strategy import QueryAdvisorStrategy
 from strategies.market_tracking_strategy import MarketTrackingStrategy
-from strategies.chart_correlation_strategy import ChartCorrelationStrategy
+try:
+    from strategies.chart_correlation_strategy import ChartCorrelationStrategy
+except ImportError as e:
+    print(f"[main] 略過圖表策略（缺少套件：{getattr(e, 'name', e)}）")
+    ChartCorrelationStrategy = None
 from strategies.contract_tracking_strategy import ContractTrackingStrategy
 from strategies.inventory_display_strategy import InventoryDisplayStrategy
 from strategies.battle_status_line_strategy import BattleStatusLineStrategy
@@ -217,10 +221,11 @@ async def run():
             [market_tracking, contract_tracking, query_advisor, inventory_display, battle_status_line]
         )
         global CHART_CORRELATION
-        CHART_CORRELATION = ChartCorrelationStrategy(
-            common_data_dir=common_dir,
-            media_dir=common_dir / "chart_media",
-        )
+        if ChartCorrelationStrategy is not None:
+            CHART_CORRELATION = ChartCorrelationStrategy(
+                common_data_dir=common_dir,
+                media_dir=common_dir / "chart_media",
+            )
         terminal_task = asyncio.create_task(terminal_input_loop())
         await client.run_until_disconnected()
         print("[連線已關閉] 已停止監聽。")
